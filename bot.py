@@ -29,6 +29,11 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 JOIN_EMOJI = "✅"
 ADMIN_ROLE_NAME = "Customs Admin"
+PROMOTION_CHANNEL_NAME = "general"
+RANK_ROLE_NAMES = [
+    "Iron", "Bronze", "Silver", "Gold", "Platinum", "Emerald", "Diamond",
+    "Master", "Grandmaster", "Challenger"
+]
 MAX_QUEUE_SIZE = 10
 BASE_RATING_CHANGE = 15
 MIN_RATING_CHANGE = 5
@@ -136,6 +141,180 @@ def normalize_role(role):
     return None
 
 
+def rank_for_rating(rating):
+    """
+    Returns the highest rank a rating qualifies for.
+    Example: 1710 -> Diamond
+    """
+    qualified_rank = "Iron"
+
+    for rank, required_rating in RANK_RATINGS.items():
+        if rating >= required_rating:
+            qualified_rank = rank
+
+    return qualified_rank
+
+
+def selected_role_rating(player, selected_role):
+    """
+    Returns the rating to use for a selected preference role.
+    If the player selected Fill, use the average of all role ratings.
+    """
+    if selected_role == "Fill":
+        role_values = [player["role_ratings"][role] for role in ROLES]
+        return round(sum(role_values) / len(role_values))
+
+    return player["role_ratings"][selected_role]
+
+
+def calculate_overall_from_selected_roles(player):
+    """
+    Overall rating is now the average of the player's selected primary and secondary roles.
+    """
+    primary_rating = selected_role_rating(player, player["primary_role"])
+    secondary_rating = selected_role_rating(player, player["secondary_role"])
+
+    return round((primary_rating + secondary_rating) / 2)
+
+
+def update_overall_rating_from_selected_roles(discord_id):
+    """
+    Recalculates and saves overall rating from selected primary/secondary roles.
+    Does not change role ratings.
+    """
+    player = get_player(discord_id)
+
+    if not player:
+        return None
+
+    new_overall = calculate_overall_from_selected_roles(player)
+
+    conn = sqlite3.connect("league_bot.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        UPDATE players
+        SET rating = ?
+        WHERE discord_id = ?
+    """, (new_overall, discord_id))
+
+    conn.commit()
+    conn.close()
+
+    return new_overall
+
+
+async def sync_member_rank_role(member, overall_rating):
+    """
+    Updates the Discord rank role based on overall rating.
+    The bot needs Manage Roles permission and must be above the rank roles.
+    """
+    if member is None or member.guild is None:
+        return
+
+    new_rank = rank_for_rating(overall_rating)
+
+    rank_roles = [
+        role for role in member.guild.roles
+        if role.name in RANK_ROLE_NAMES
+    ]
+
+    role_to_add = discord.utils.get(member.guild.roles, name=new_rank)
+
+    if role_to_add is None:
+        print(f"Rank role not found: {new_rank}")
+        return
+
+    roles_to_remove = [
+        role for role in rank_roles
+        if role in member.roles and role.name != new_rank
+    ]
+
+    try:
+        if roles_to_remove:
+            await member.remove_roles(
+                *roles_to_remove,
+                reason="League bot rank role sync"
+            )
+
+        if role_to_add not in member.roles:
+            await member.add_roles(
+                role_to_add,
+                reason="League bot rank role sync"
+            )
+
+    except discord.Forbidden:
+        print("Could not update rank role: missing Manage Roles permission or role hierarchy issue.")
+    except Exception as e:
+        print(f"Could not update rank role: {e}")
+
+
+def check_role_promotion(player, assigned_role, rating_change):
+    """
+    Checks whether a player's role rating crossed into a new rank after a win.
+    Only announces promotions, not demotions.
+    """
+    old_rating = role_rating(player, assigned_role)
+    new_rating = old_rating + rating_change
+
+    old_rank = rank_for_rating(old_rating)
+    new_rank = rank_for_rating(new_rating)
+
+    if new_rank == old_rank:
+        return None
+
+    if RANK_RATINGS[new_rank] <= RANK_RATINGS[old_rank]:
+        return None
+
+    return {
+        "discord_id": player["discord_id"],
+        "name": player["name"],
+        "role": assigned_role,
+        "old_rating": old_rating,
+        "new_rating": new_rating,
+        "old_rank": old_rank,
+        "new_rank": new_rank
+    }
+
+
+def get_promotion_channel(guild):
+    if guild is None:
+        return None
+
+    return discord.utils.get(guild.text_channels, name=PROMOTION_CHANNEL_NAME)
+
+
+async def send_promotion_announcement(ctx, promotion):
+    channel = get_promotion_channel(ctx.guild)
+
+    if channel is None:
+        print(f"Could not find promotion channel named #{PROMOTION_CHANNEL_NAME}")
+        return
+
+    embed = discord.Embed(
+        title="🎉 Role Promotion!",
+        description=(
+            f"<@{promotion['discord_id']}> has been promoted!\n\n"
+            f"{rank_emoji(promotion['new_rank'])} **{promotion['new_rank']}** "
+            f"on {role_emoji(promotion['role'])} **{promotion['role']}**"
+        ),
+        color=COLOR_SUCCESS
+    )
+
+    embed.add_field(
+        name="Rating",
+        value=f"**{promotion['old_rating']}** → **{promotion['new_rating']}**",
+        inline=False
+    )
+
+    embed.set_footer(text="Keep climbing.")
+
+    await channel.send(
+        content=f"🎉 <@{promotion['discord_id']}> just ranked up!",
+        embed=embed
+    )
+
+
 def role_column(role):
     return {
         "Top": "top_rating",
@@ -208,6 +387,29 @@ def update_player_avoided_role_manual(discord_id, avoided_role):
         SET avoided_role = ?
         WHERE discord_id = ?
     """, (avoided_role, discord_id))
+
+    rows_changed = cursor.rowcount
+    conn.commit()
+    conn.close()
+
+    return rows_changed > 0
+
+
+def update_player_role_preferences_manual(discord_id, primary_role, secondary_role, avoided_role):
+    """
+    Updates only role preferences.
+    Does NOT reset rank, overall rating, role ratings, wins, losses, or match history.
+    """
+    conn = sqlite3.connect("league_bot.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        UPDATE players
+        SET primary_role = ?,
+            secondary_role = ?,
+            avoided_role = ?
+        WHERE discord_id = ?
+    """, (primary_role, secondary_role, avoided_role, discord_id))
 
     rows_changed = cursor.rowcount
     conn.commit()
@@ -389,16 +591,21 @@ def role_rating(player, role):
 
 
 def clean_player_line(player):
+    """
+    Compact queue line to prevent Discord embeds from cutting off around 7-8 players.
+    Format:
+    RankEmoji Name — Primary/Secondary — Rating — Avoid
+    """
     avoided_role = player.get("avoided_role", "None")
 
     avoid_text = ""
     if avoided_role != "None":
-        avoid_text = f" • Avoid: {role_emoji(avoided_role)}"
+        avoid_text = f" • Avoid {role_emoji(avoided_role)}"
 
     return (
-        f"{rank_emoji(player['rank'])} **{player['name']}**\n"
-        f"{role_emoji(player['primary_role'])} {role_emoji(player['secondary_role'])} "
-        f"**{player['rating']}** rating{avoid_text}"
+        f"{rank_emoji(player['rank'])} **{player['name']}** — "
+        f"{role_emoji(player['primary_role'])}/{role_emoji(player['secondary_role'])} — "
+        f"**{player['rating']}**{avoid_text}"
     )
 
 
@@ -407,11 +614,11 @@ def clean_waitlist_line(index, player):
 
     avoid_text = ""
     if avoided_role != "None":
-        avoid_text = f" • Avoid: {role_emoji(avoided_role)}"
+        avoid_text = f" • Avoid {role_emoji(avoided_role)}"
 
     return (
         f"**#{index}** {rank_emoji(player['rank'])} **{player['name']}** — "
-        f"{role_emoji(player['primary_role'])} {role_emoji(player['secondary_role'])} "
+        f"{role_emoji(player['primary_role'])}/{role_emoji(player['secondary_role'])} — "
         f"**{player['rating']}**{avoid_text}"
     )
 
@@ -426,7 +633,7 @@ def clean_assigned_line(player):
         avoid_warning = " ⚠️ avoided"
 
     return (
-        f"{role_emoji(assigned_role)} **{player['name']}**{avoid_warning}\n"
+        f"{role_emoji(assigned_role)} <@{player['discord_id']}>{avoid_warning}\n"
         f"{rank_emoji(player['rank'])} **{assigned_rating}** role rating"
     )
 
@@ -476,16 +683,38 @@ async def send_embed(ctx, title, description, color):
     await ctx.send(embed=embed)
 
 
+def add_queue_chunks(embed, title, lines, chunk_size=5):
+    """
+    Discord embed fields have size limits.
+    Keeping each player on one compact line and splitting into chunks prevents cutoffs.
+    """
+    if not lines:
+        embed.add_field(name=title, value="No players.", inline=False)
+        return
+
+    for index in range(0, len(lines), chunk_size):
+        chunk = lines[index:index + chunk_size]
+        start_number = index + 1
+        end_number = index + len(chunk)
+
+        field_title = title
+        if len(lines) > chunk_size:
+            field_title = f"{title} #{start_number}-{end_number}"
+
+        embed.add_field(
+            name=field_title,
+            value="\n".join(chunk),
+            inline=False
+        )
+
+
 def build_queue_embed():
     lock_status = "🔒 Locked" if queue_locked else "🔓 Open"
 
     embed = discord.Embed(
         title=f"League 5v5 Queue ({len(player_queue)}/{MAX_QUEUE_SIZE}) — {lock_status}",
         description=(
-            "React with ✅ to join the queue.\n"
-            "The first 10 players enter the active queue.\n"
-            "Everyone after that is automatically placed on the waitlist.\n"
-            "When the queue is locked, new players go straight to the waitlist."
+            "React with ✅ to join. First 10 are active. Extra players go to waitlist."
         ),
         color=COLOR_QUEUE
     )
@@ -493,8 +722,17 @@ def build_queue_embed():
     if not player_queue:
         embed.add_field(name="Active Queue", value="No players queued yet.", inline=False)
     else:
-        lines = [clean_player_line(player) for player in player_queue.values()]
-        embed.add_field(name="Active Queue", value="\n\n".join(lines), inline=False)
+        active_lines = [
+            f"**#{index}** {clean_player_line(player)}"
+            for index, player in enumerate(player_queue.values(), start=1)
+        ]
+
+        add_queue_chunks(
+            embed,
+            f"Active Queue ({len(player_queue)}/{MAX_QUEUE_SIZE})",
+            active_lines,
+            chunk_size=5
+        )
 
         ratings = [player["rating"] for player in player_queue.values()]
         avg_rating = round(sum(ratings) / len(ratings))
@@ -504,10 +742,9 @@ def build_queue_embed():
         embed.add_field(
             name="Queue Stats",
             value=(
-                f"**Players:** {len(player_queue)}/{MAX_QUEUE_SIZE}\n"
-                f"**Average Rating:** {avg_rating}\n"
-                f"**Highest Rating:** {highest}\n"
-                f"**Lowest Rating:** {lowest}"
+                f"**Avg:** {avg_rating}  •  "
+                f"**High:** {highest}  •  "
+                f"**Low:** {lowest}"
             ),
             inline=False
         )
@@ -517,15 +754,17 @@ def build_queue_embed():
             clean_waitlist_line(index, player)
             for index, player in enumerate(waitlist_queue.values(), start=1)
         ]
-        embed.add_field(
-            name=f"Waitlist ({len(waitlist_queue)})",
-            value="\n".join(waitlist_lines),
-            inline=False
+
+        add_queue_chunks(
+            embed,
+            f"Waitlist ({len(waitlist_queue)})",
+            waitlist_lines,
+            chunk_size=5
         )
     else:
         embed.add_field(name="Waitlist", value="No players waiting.", inline=False)
 
-    embed.set_footer(text="!teams locks the active queue. !result saves the match, clears active players, unlocks queue, and promotes waitlisted players.")
+    embed.set_footer(text="Use !teams when 10 players are active. After !result, a fresh queue post is created.")
     return embed
 
 async def update_queue_message():
@@ -541,6 +780,57 @@ async def update_queue_message():
         await msg.edit(embed=build_queue_embed())
     except Exception as e:
         print(f"Could not update queue message: {e}")
+
+
+async def delete_queue_message():
+    global queue_message_id, queue_channel_id
+
+    if queue_message_id is None or queue_channel_id is None:
+        return None
+
+    channel = bot.get_channel(queue_channel_id)
+
+    if channel is None:
+        queue_message_id = None
+        queue_channel_id = None
+        return None
+
+    try:
+        msg = await channel.fetch_message(queue_message_id)
+        await msg.delete()
+    except discord.NotFound:
+        # Queue post was already deleted. Clear the stale saved IDs.
+        pass
+    except discord.Forbidden:
+        print("Could not delete queue message: missing permissions.")
+    except Exception as e:
+        print(f"Could not delete queue message: {e}")
+
+    queue_message_id = None
+    queue_channel_id = None
+
+    return channel
+
+
+async def create_queue_message(channel, replace_existing=True):
+    global queue_message_id, queue_channel_id
+
+    if channel is None:
+        return None
+
+    if replace_existing and queue_message_id is not None:
+        await delete_queue_message()
+
+    msg = await channel.send(embed=build_queue_embed())
+    queue_message_id = msg.id
+    queue_channel_id = channel.id
+
+    try:
+        await msg.add_reaction(JOIN_EMOJI)
+    except Exception as e:
+        print(f"Could not add join reaction to queue message: {e}")
+
+    return msg
 
 
 class SignupView(discord.ui.View):
@@ -577,8 +867,15 @@ class SignupView(discord.ui.View):
             avoided_role=data.get("avoided_role", "None")
         )
 
+        new_overall = update_overall_rating_from_selected_roles(user_id)
+        await sync_member_rank_role(interaction.user, new_overall)
+
         await interaction.response.send_message(
-            "Signup complete and saved.",
+            (
+                "Signup complete and saved.\n"
+                f"Overall Rating: **{new_overall}** "
+                f"({rank_emoji(rank_for_rating(new_overall))} **{rank_for_rating(new_overall)}**)"
+            ),
             ephemeral=True
         )
 
@@ -681,6 +978,121 @@ class SignupView(discord.ui.View):
         )
 
 
+class RoleChangeView(discord.ui.View):
+    def __init__(self, player):
+        super().__init__(timeout=300)
+        self.player = player
+        self.role_data = {
+            "primary_role": player["primary_role"],
+            "secondary_role": player["secondary_role"],
+            "avoided_role": player.get("avoided_role", "None")
+        }
+
+    async def save_if_valid(self, interaction: discord.Interaction):
+        primary_role = self.role_data["primary_role"]
+        secondary_role = self.role_data["secondary_role"]
+        avoided_role = self.role_data.get("avoided_role", "None")
+
+        if primary_role == secondary_role:
+            await interaction.response.send_message(
+                "Your primary and secondary role cannot be the same. Please choose a different role.",
+                ephemeral=True
+            )
+            return
+
+        updated = update_player_role_preferences_manual(
+            discord_id=interaction.user.id,
+            primary_role=primary_role,
+            secondary_role=secondary_role,
+            avoided_role=avoided_role
+        )
+
+        if not updated:
+            await interaction.response.send_message(
+                "Could not update your roles. Make sure you have signed up first.",
+                ephemeral=True
+            )
+            return
+
+        new_overall = update_overall_rating_from_selected_roles(interaction.user.id)
+        await sync_member_rank_role(interaction.user, new_overall)
+
+        refresh_player_in_queues(interaction.user.id)
+        await update_queue_message()
+
+        await interaction.response.send_message(
+            (
+                "Role preferences updated without resetting your role ratings or match history.\n\n"
+                f"Primary: {role_emoji(primary_role)} **{primary_role}**\n"
+                f"Secondary: {role_emoji(secondary_role)} **{secondary_role}**\n"
+                f"Avoid: **{avoid_role_display(avoided_role)}**\n"
+                f"New Overall Rating: **{new_overall}** "
+                f"({rank_emoji(rank_for_rating(new_overall))} **{rank_for_rating(new_overall)}**)"
+            ),
+            ephemeral=True
+        )
+
+    @discord.ui.select(
+        placeholder="Change your primary role",
+        options=[
+            role_option("Top", "Primary solo lane"),
+            role_option("Jungle", "Primary jungle"),
+            role_option("Mid", "Primary mid lane"),
+            role_option("ADC", "Primary bot carry"),
+            role_option("Support", "Primary support"),
+            role_option("Fill", "Comfortable filling")
+        ]
+    )
+    async def primary_select(self, interaction: discord.Interaction, select: discord.ui.Select):
+        if interaction.user.id != self.player["discord_id"]:
+            await interaction.response.send_message("This role menu is not for you.", ephemeral=True)
+            return
+
+        self.role_data["primary_role"] = select.values[0]
+
+        await self.save_if_valid(interaction)
+
+    @discord.ui.select(
+        placeholder="Change your secondary role",
+        options=[
+            role_option("Top", "Secondary solo lane"),
+            role_option("Jungle", "Secondary jungle"),
+            role_option("Mid", "Secondary mid lane"),
+            role_option("ADC", "Secondary bot carry"),
+            role_option("Support", "Secondary support"),
+            role_option("Fill", "Can fill if needed")
+        ]
+    )
+    async def secondary_select(self, interaction: discord.Interaction, select: discord.ui.Select):
+        if interaction.user.id != self.player["discord_id"]:
+            await interaction.response.send_message("This role menu is not for you.", ephemeral=True)
+            return
+
+        self.role_data["secondary_role"] = select.values[0]
+
+        await self.save_if_valid(interaction)
+
+    @discord.ui.select(
+        placeholder="Change your avoided role",
+        options=[
+            discord.SelectOption(label="None", emoji="✅", description="I do not want to avoid any role"),
+            role_option("Top", "Avoid top if possible"),
+            role_option("Jungle", "Avoid jungle if possible"),
+            role_option("Mid", "Avoid mid if possible"),
+            role_option("ADC", "Avoid ADC if possible"),
+            role_option("Support", "Avoid support if possible")
+        ]
+    )
+    async def avoided_select(self, interaction: discord.Interaction, select: discord.ui.Select):
+        if interaction.user.id != self.player["discord_id"]:
+            await interaction.response.send_message("This role menu is not for you.", ephemeral=True)
+            return
+
+        self.role_data["avoided_role"] = select.values[0]
+
+        await self.save_if_valid(interaction)
+
+
 @bot.event
 async def on_ready():
     setup_database()
@@ -741,6 +1153,51 @@ async def signup(ctx):
         )
 
 
+@bot.hybrid_command(name="changeroles")
+async def changeroles(ctx):
+    player = get_player(ctx.author.id)
+
+    if not player:
+        await send_embed(
+            ctx,
+            "Profile Not Found",
+            "You need to use `/signup` before changing roles.",
+            COLOR_ERROR
+        )
+        return
+
+    embed = discord.Embed(
+        title="Change Role Preferences",
+        description=(
+            "Update your primary, secondary, or avoided role.\n\n"
+            "**This will not reset your rank, rating, role ratings, wins, losses, or match history.**"
+        ),
+        color=COLOR_PROFILE
+    )
+
+    embed.add_field(
+        name="Current Roles",
+        value=(
+            f"Primary: {role_emoji(player['primary_role'])} **{player['primary_role']}**\n"
+            f"Secondary: {role_emoji(player['secondary_role'])} **{player['secondary_role']}**\n"
+            f"Avoid: **{avoid_role_display(player.get('avoided_role', 'None'))}**"
+        ),
+        inline=False
+    )
+
+    if ctx.interaction:
+        await ctx.interaction.response.send_message(
+            embed=embed,
+            view=RoleChangeView(player),
+            ephemeral=True
+        )
+    else:
+        await ctx.send(
+            embed=embed,
+            view=RoleChangeView(player)
+        )
+
+
 @bot.command()
 async def profile(ctx, member: discord.Member = None):
     member = member or ctx.author
@@ -756,7 +1213,8 @@ async def profile(ctx, member: discord.Member = None):
 
     embed = discord.Embed(title=f"{player['name']}'s Profile", color=COLOR_PROFILE)
     embed.add_field(name="Rank", value=f"{rank_emoji(player['rank'])} {player['rank']}", inline=True)
-    embed.add_field(name="Overall Rating", value=str(player["rating"]), inline=True)
+    calculated_overall = calculate_overall_from_selected_roles(player)
+    embed.add_field(name="Overall Rating", value=str(calculated_overall), inline=True)
     embed.add_field(name="Record", value=f"{player['wins']}W / {player['losses']}L", inline=True)
     embed.add_field(
         name="Preferred Roles",
@@ -774,13 +1232,30 @@ async def profile(ctx, member: discord.Member = None):
 
 @bot.command()
 async def queuepost(ctx):
-    global queue_message_id, queue_channel_id
+    try:
+        await create_queue_message(ctx.channel, replace_existing=True)
 
-    msg = await ctx.send(embed=build_queue_embed())
-    queue_message_id = msg.id
-    queue_channel_id = ctx.channel.id
+        await ctx.send(
+            embed=discord.Embed(
+                title="Queue Post Refreshed",
+                description="A fresh queue post has been created. Any old queue post was removed if it still existed.",
+                color=COLOR_SUCCESS
+            ),
+            delete_after=8
+        )
+    except Exception as e:
+        print(f"Queuepost error: {e}")
 
-    await msg.add_reaction(JOIN_EMOJI)
+        await ctx.send(
+            embed=discord.Embed(
+                title="Queue Post Error",
+                description=(
+                    "The bot could not create the queue post. "
+                    "Check that it has permission to send messages, embed links, and add reactions in this channel."
+                ),
+                color=COLOR_ERROR
+            )
+        )
 
 
 @bot.event
@@ -912,8 +1387,15 @@ async def clearqueue(ctx):
     queue_locked = False
     last_blue_team = []
     last_red_team = []
-    await update_queue_message()
-    await send_embed(ctx, "Queue Cleared", "The League 5v5 queue and waitlist have been reset.", COLOR_SUCCESS)
+
+    await delete_queue_message()
+
+    await send_embed(
+        ctx,
+        "Queue Cleared",
+        "The League 5v5 queue and waitlist have been reset. The old queue post was removed.",
+        COLOR_SUCCESS
+    )
 
 
 @bot.command()
@@ -1168,13 +1650,20 @@ async def setrolerating(ctx, member: discord.Member, role: str, rating: int):
         await send_embed(ctx, "Update Failed", "Could not update that player's role rating.", COLOR_ERROR)
         return
 
+    new_overall = update_overall_rating_from_selected_roles(member.id)
+    await sync_member_rank_role(member, new_overall)
+
     refresh_player_in_queues(member.id)
     await update_queue_message()
 
     await send_embed(
         ctx,
         "Role Rating Updated",
-        f"{role_emoji(normalized_role)} **{member.display_name}'s {normalized_role}** rating is now **{rating}**.",
+        (
+            f"{role_emoji(normalized_role)} **{member.display_name}'s {normalized_role}** rating is now **{rating}**.\n"
+            f"Overall rating is now **{new_overall}** "
+            f"({rank_emoji(rank_for_rating(new_overall))} **{rank_for_rating(new_overall)}**)."
+        ),
         COLOR_SUCCESS
     )
 
@@ -1248,6 +1737,9 @@ async def resetplayer(ctx, member: discord.Member):
     if not updated:
         await send_embed(ctx, "Reset Failed", "Could not reset that player's ratings.", COLOR_ERROR)
         return
+
+    new_overall = update_overall_rating_from_selected_roles(member.id)
+    await sync_member_rank_role(member, new_overall)
 
     refresh_player_in_queues(member.id)
     await update_queue_message()
@@ -1323,6 +1815,35 @@ async def fullseasonreset(ctx):
             f"Reset ratings, role ratings, wins, and losses for **{reset_count}** players.\n"
             "Player signup profiles were kept."
         ),
+        COLOR_SUCCESS
+    )
+
+
+@bot.command()
+async def syncrankroles(ctx):
+    if not await require_admin(ctx):
+        return
+
+    synced_count = 0
+
+    conn = sqlite3.connect("league_bot.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT discord_id FROM players")
+    rows = cursor.fetchall()
+    conn.close()
+
+    for (discord_id,) in rows:
+        new_overall = update_overall_rating_from_selected_roles(discord_id)
+        member = ctx.guild.get_member(discord_id) if ctx.guild else None
+
+        if member and new_overall is not None:
+            await sync_member_rank_role(member, new_overall)
+            synced_count += 1
+
+    await send_embed(
+        ctx,
+        "Rank Roles Synced",
+        f"Updated rank roles for **{synced_count}** players.",
         COLOR_SUCCESS
     )
 
@@ -1502,6 +2023,7 @@ async def result(ctx, winner: str):
 
     winner_changes = []
     loser_changes = []
+    promoted_players = []
 
     for player in winning_team:
         player_change = calculate_player_lobby_rating_change(
@@ -1511,12 +2033,25 @@ async def result(ctx, winner: str):
             won=True
         )
 
+        promotion = check_role_promotion(
+            player,
+            player["assigned_role"],
+            player_change
+        )
+
+        if promotion:
+            promoted_players.append(promotion)
+
         update_player_after_match(
             player["discord_id"],
             player["assigned_role"],
             player_change,
             won=True
         )
+
+        new_overall = update_overall_rating_from_selected_roles(player["discord_id"])
+        member = ctx.guild.get_member(player["discord_id"]) if ctx.guild else None
+        await sync_member_rank_role(member, new_overall)
 
         winner_changes.append((player, player_change))
 
@@ -1534,6 +2069,10 @@ async def result(ctx, winner: str):
             -player_change,
             won=False
         )
+
+        new_overall = update_overall_rating_from_selected_roles(player["discord_id"])
+        member = ctx.guild.get_member(player["discord_id"]) if ctx.guild else None
+        await sync_member_rank_role(member, new_overall)
 
         loser_changes.append((player, player_change))
 
@@ -1579,24 +2118,47 @@ async def result(ctx, winner: str):
     embed.add_field(name="Blue Team Rating", value=str(blue_rating), inline=True)
     embed.add_field(name="Red Team Rating", value=str(red_rating), inline=True)
 
+    if promoted_players:
+        promotion_lines = []
+
+        for promotion in promoted_players:
+            promotion_lines.append(
+                f"<@{promotion['discord_id']}> promoted to "
+                f"{rank_emoji(promotion['new_rank'])} **{promotion['new_rank']}** "
+                f"on {role_emoji(promotion['role'])} **{promotion['role']}** "
+                f"({promotion['old_rating']} → {promotion['new_rating']})"
+            )
+
+        embed.add_field(
+            name="Rank Promotions",
+            value="\n".join(promotion_lines),
+            inline=False
+        )
+
+        for promotion in promoted_players:
+            await send_promotion_announcement(ctx, promotion)
+
     clear_completed_game_players()
     queue_locked = False
     promoted = refill_active_queue_from_waitlist()
     last_blue_team = []
     last_red_team = []
-    await update_queue_message()
+
+    # Delete the old queue post after a game result, then create a fresh queue post in the same channel.
+    old_queue_channel = await delete_queue_message()
+    new_queue_message = await create_queue_message(old_queue_channel, replace_existing=False)
 
     if promoted:
         promoted_names = ", ".join(player["name"] for player in promoted)
         embed.add_field(
             name="Queue Updated",
-            value=f"Active game players were cleared. Queue unlocked. Promoted from waitlist: {promoted_names}",
+            value=f"Active game players were cleared. Queue unlocked. Promoted from waitlist: {promoted_names}\nA fresh queue post was created automatically.",
             inline=False
         )
     else:
         embed.add_field(
             name="Queue Updated",
-            value="Active game players were cleared and the queue is unlocked.",
+            value="Active game players were cleared, the queue is unlocked, and a fresh queue post was created automatically.",
             inline=False
         )
 
