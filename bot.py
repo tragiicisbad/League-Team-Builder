@@ -2403,6 +2403,77 @@ async def result(ctx, winner: str):
     await ctx.send(embed=embed)
 
 
+
+
+def get_winrate_page(limit=10, offset=0):
+    conn = connect()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT name, rank, rating, primary_role, secondary_role, wins, losses
+        FROM players
+        WHERE (wins + losses) > 0
+        ORDER BY
+            (wins::float / NULLIF((wins + losses), 0)) DESC,
+            (wins + losses) DESC,
+            rating DESC
+        LIMIT %s OFFSET %s
+    """, (limit, offset))
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    return rows
+
+
+async def winrate_page(ctx, page=1):
+    per_page = 10
+
+    if page < 1:
+        page = 1
+
+    offset = (page - 1) * per_page
+    rows = get_winrate_page(per_page, offset)
+
+    if not rows:
+        await send_embed(
+            ctx,
+            "Winrate Leaderboard",
+            "No players found for this page.",
+            COLOR_WARNING
+        )
+        return
+
+    lines = []
+
+    for index, row in enumerate(rows, start=offset + 1):
+        name, stored_rank, rating, primary_role, secondary_role, wins, losses = row
+        games_played = wins + losses
+        winrate = round((wins / games_played) * 100, 1) if games_played > 0 else 0
+
+        current_rank = rank_for_rating(rating)
+
+        lines.append(
+            f"**#{index}** {rank_emoji(current_rank)} **{name}** — "
+            f"**{winrate}%** WR | **{wins}W / {losses}L** | "
+            f"{role_emoji(primary_role)}/{role_emoji(secondary_role)} | **{rating}** rating"
+        )
+
+    embed = discord.Embed(
+        title=f"Winrate Leaderboard — Page {page}",
+        description="\n".join(lines),
+        color=COLOR_PROFILE
+    )
+
+    embed.set_footer(text=f"Use !winrate {page + 1} to see the next page.")
+
+    await ctx.send(embed=embed)
+
+
+@bot.command()
+async def winrate(ctx, page: int = 1):
+    await winrate_page(ctx, page=page)
+
 def get_leaderboard_page(limit=10, offset=0):
     conn = connect()
     cursor = conn.cursor()
