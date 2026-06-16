@@ -2405,6 +2405,9 @@ async def result(ctx, winner: str):
 
 
 
+MIN_WINRATE_GAMES = 5
+
+
 def get_winrate_page(limit=10, offset=0):
     conn = connect()
     cursor = conn.cursor()
@@ -2412,18 +2415,28 @@ def get_winrate_page(limit=10, offset=0):
     cursor.execute("""
         SELECT name, rank, rating, primary_role, secondary_role, wins, losses
         FROM players
-        WHERE (wins + losses) > 0
+        WHERE (wins + losses) >= %s
         ORDER BY
             (wins::float / NULLIF((wins + losses), 0)) DESC,
             (wins + losses) DESC,
             rating DESC
         LIMIT %s OFFSET %s
-    """, (limit, offset))
+    """, (MIN_WINRATE_GAMES, limit, offset))
 
     rows = cursor.fetchall()
     conn.close()
 
     return rows
+
+
+def format_winrate_medal(position):
+    if position == 1:
+        return "🥇"
+    if position == 2:
+        return "🥈"
+    if position == 3:
+        return "🥉"
+    return f"`#{position}`"
 
 
 async def winrate_page(ctx, page=1):
@@ -2439,33 +2452,38 @@ async def winrate_page(ctx, page=1):
         await send_embed(
             ctx,
             "Winrate Leaderboard",
-            "No players found for this page.",
+            f"No eligible players found for page **{page}**.\n\nPlayers need at least **{MIN_WINRATE_GAMES} games played** to appear.",
             COLOR_WARNING
         )
         return
 
-    lines = []
+    embed = discord.Embed(
+        title=f"🏆 Winrate Leaderboard — Page {page}",
+        description=f"Minimum **{MIN_WINRATE_GAMES} games played** required.",
+        color=COLOR_PROFILE
+    )
 
     for index, row in enumerate(rows, start=offset + 1):
         name, stored_rank, rating, primary_role, secondary_role, wins, losses = row
         games_played = wins + losses
-        winrate = round((wins / games_played) * 100, 1) if games_played > 0 else 0
+        winrate = round((wins / games_played) * 100, 1)
 
         current_rank = rank_for_rating(rating)
+        medal = format_winrate_medal(index)
 
-        lines.append(
-            f"**#{index}** {rank_emoji(current_rank)} **{name}** — "
-            f"**{winrate}%** WR | **{wins}W / {losses}L** | "
-            f"{role_emoji(primary_role)}/{role_emoji(secondary_role)} | **{rating}** rating"
+        embed.add_field(
+            name=f"{medal} {rank_emoji(current_rank)} {name}",
+            value=(
+                f"**Winrate:** `{winrate}%`\n"
+                f"**Record:** `{wins}W - {losses}L`  •  **Games:** `{games_played}`\n"
+                f"**Roles:** {role_emoji(primary_role)} {primary_role} / "
+                f"{role_emoji(secondary_role)} {secondary_role}\n"
+                f"**Rating:** `{rating}`"
+            ),
+            inline=False
         )
 
-    embed = discord.Embed(
-        title=f"Winrate Leaderboard — Page {page}",
-        description="\n".join(lines),
-        color=COLOR_PROFILE
-    )
-
-    embed.set_footer(text=f"Use !winrate {page + 1} to see the next page.")
+    embed.set_footer(text=f"Use !winrate {page + 1} for the next page.")
 
     await ctx.send(embed=embed)
 
