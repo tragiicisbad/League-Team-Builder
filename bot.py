@@ -1,12 +1,12 @@
 import os
 import itertools
 import json
-import sqlite3
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
 
 from database import (
+    connect,
     setup_database,
     save_player,
     get_player,
@@ -190,13 +190,13 @@ def update_overall_rating_from_selected_roles(discord_id):
 
     new_overall = calculate_overall_from_selected_roles(player)
 
-    conn = sqlite3.connect("league_bot.db")
+    conn = connect()
     cursor = conn.cursor()
 
     cursor.execute("""
         UPDATE players
-        SET rating = ?
-        WHERE discord_id = ?
+        SET rating = %s
+        WHERE discord_id = %s
     """, (new_overall, discord_id))
 
     conn.commit()
@@ -327,13 +327,13 @@ def role_column(role):
 
 
 def update_player_rank_manual(discord_id, rank, rating):
-    conn = sqlite3.connect("league_bot.db")
+    conn = connect()
     cursor = conn.cursor()
 
     cursor.execute("""
         UPDATE players
-        SET rank = ?, rating = ?
-        WHERE discord_id = ?
+        SET rank = %s, rating = %s
+        WHERE discord_id = %s
     """, (rank, rating, discord_id))
 
     rows_changed = cursor.rowcount
@@ -344,13 +344,13 @@ def update_player_rank_manual(discord_id, rank, rating):
 
 
 def update_player_rating_manual(discord_id, rating):
-    conn = sqlite3.connect("league_bot.db")
+    conn = connect()
     cursor = conn.cursor()
 
     cursor.execute("""
         UPDATE players
-        SET rating = ?
-        WHERE discord_id = ?
+        SET rating = %s
+        WHERE discord_id = %s
     """, (rating, discord_id))
 
     rows_changed = cursor.rowcount
@@ -363,13 +363,13 @@ def update_player_rating_manual(discord_id, rating):
 def update_player_role_rating_manual(discord_id, role, rating):
     column = role_column(role)
 
-    conn = sqlite3.connect("league_bot.db")
+    conn = connect()
     cursor = conn.cursor()
 
     cursor.execute(f"""
         UPDATE players
-        SET {column} = ?
-        WHERE discord_id = ?
+        SET {column} = %s
+        WHERE discord_id = %s
     """, (rating, discord_id))
 
     rows_changed = cursor.rowcount
@@ -380,13 +380,13 @@ def update_player_role_rating_manual(discord_id, role, rating):
 
 
 def update_player_avoided_role_manual(discord_id, avoided_role):
-    conn = sqlite3.connect("league_bot.db")
+    conn = connect()
     cursor = conn.cursor()
 
     cursor.execute("""
         UPDATE players
-        SET avoided_role = ?
-        WHERE discord_id = ?
+        SET avoided_role = %s
+        WHERE discord_id = %s
     """, (avoided_role, discord_id))
 
     rows_changed = cursor.rowcount
@@ -401,15 +401,15 @@ def update_player_role_preferences_manual(discord_id, primary_role, secondary_ro
     Updates only role preferences.
     Does NOT reset rank, overall rating, role ratings, wins, losses, or match history.
     """
-    conn = sqlite3.connect("league_bot.db")
+    conn = connect()
     cursor = conn.cursor()
 
     cursor.execute("""
         UPDATE players
-        SET primary_role = ?,
-            secondary_role = ?,
-            avoided_role = ?
-        WHERE discord_id = ?
+        SET primary_role = %s,
+            secondary_role = %s,
+            avoided_role = %s
+        WHERE discord_id = %s
     """, (primary_role, secondary_role, avoided_role, discord_id))
 
     rows_changed = cursor.rowcount
@@ -432,20 +432,20 @@ def reset_player_ratings_manual(discord_id):
         player["secondary_role"]
     )
 
-    conn = sqlite3.connect("league_bot.db")
+    conn = connect()
     cursor = conn.cursor()
 
     cursor.execute("""
         UPDATE players
-        SET rating = ?,
-            top_rating = ?,
-            jungle_rating = ?,
-            mid_rating = ?,
-            adc_rating = ?,
-            support_rating = ?,
+        SET rating = %s,
+            top_rating = %s,
+            jungle_rating = %s,
+            mid_rating = %s,
+            adc_rating = %s,
+            support_rating = %s,
             wins = 0,
             losses = 0
-        WHERE discord_id = ?
+        WHERE discord_id = %s
     """, (
         base_rating,
         role_ratings["Top"],
@@ -488,14 +488,14 @@ def make_manual_role_ratings(base_rating, primary_role, secondary_role):
 
 
 def clear_match_history_manual():
-    conn = sqlite3.connect("league_bot.db")
+    conn = connect()
     cursor = conn.cursor()
 
     cursor.execute("DELETE FROM matches")
     deleted_matches = cursor.rowcount
 
-    # Reset autoincrement counter for match IDs if the table uses sqlite_sequence.
-    cursor.execute("DELETE FROM sqlite_sequence WHERE name = 'matches'")
+    # Reset PostgreSQL sequence for match IDs.
+    cursor.execute("ALTER SEQUENCE matches_id_seq RESTART WITH 1")
 
     conn.commit()
     conn.close()
@@ -504,7 +504,7 @@ def clear_match_history_manual():
 
 
 def reset_all_players_ratings_manual():
-    conn = sqlite3.connect("league_bot.db")
+    conn = connect()
     cursor = conn.cursor()
 
     cursor.execute("""
@@ -519,15 +519,15 @@ def reset_all_players_ratings_manual():
 
         cursor.execute("""
             UPDATE players
-            SET rating = ?,
-                top_rating = ?,
-                jungle_rating = ?,
-                mid_rating = ?,
-                adc_rating = ?,
-                support_rating = ?,
+            SET rating = %s,
+                top_rating = %s,
+                jungle_rating = %s,
+                mid_rating = %s,
+                adc_rating = %s,
+                support_rating = %s,
                 wins = 0,
                 losses = 0
-            WHERE discord_id = ?
+            WHERE discord_id = %s
         """, (
             base_rating,
             role_ratings["Top"],
@@ -605,10 +605,13 @@ def clean_player_line(player):
     if avoided_role != "None":
         avoid_text = f" • Avoid {role_emoji(avoided_role)}"
 
+    current_overall = calculate_overall_from_selected_roles(player)
+    current_rank = rank_for_rating(current_overall)
+
     return (
-        f"{rank_emoji(player['rank'])} **{player['name']}** — "
+        f"{rank_emoji(current_rank)} **{player['name']}** — "
         f"{role_emoji(player['primary_role'])}/{role_emoji(player['secondary_role'])} — "
-        f"**{player['rating']}**{avoid_text}"
+        f"**{current_overall}**{avoid_text}"
     )
 
 
@@ -619,10 +622,13 @@ def clean_waitlist_line(index, player):
     if avoided_role != "None":
         avoid_text = f" • Avoid {role_emoji(avoided_role)}"
 
+    current_overall = calculate_overall_from_selected_roles(player)
+    current_rank = rank_for_rating(current_overall)
+
     return (
-        f"**#{index}** {rank_emoji(player['rank'])} **{player['name']}** — "
+        f"**#{index}** {rank_emoji(current_rank)} **{player['name']}** — "
         f"{role_emoji(player['primary_role'])}/{role_emoji(player['secondary_role'])} — "
-        f"**{player['rating']}**{avoid_text}"
+        f"**{current_overall}**{avoid_text}"
     )
 
 
@@ -635,9 +641,11 @@ def clean_assigned_line(player):
     if avoided_role == assigned_role:
         avoid_warning = " ⚠️ avoided"
 
+    current_rank = rank_for_rating(assigned_rating)
+
     return (
         f"{role_emoji(assigned_role)} <@{player['discord_id']}>{avoid_warning}\n"
-        f"{rank_emoji(player['rank'])} **{assigned_rating}** role rating"
+        f"{rank_emoji(current_rank)} **{assigned_rating}** role rating"
     )
 
 
@@ -1997,7 +2005,7 @@ async def syncrankroles(ctx):
 
     synced_count = 0
 
-    conn = sqlite3.connect("league_bot.db")
+    conn = connect()
     cursor = conn.cursor()
     cursor.execute("SELECT discord_id FROM players")
     rows = cursor.fetchall()
@@ -2396,14 +2404,14 @@ async def result(ctx, winner: str):
 
 
 def get_leaderboard_page(limit=10, offset=0):
-    conn = sqlite3.connect("league_bot.db")
+    conn = connect()
     cursor = conn.cursor()
 
     cursor.execute("""
         SELECT name, rank, rating, primary_role, secondary_role, wins, losses
         FROM players
         ORDER BY rating DESC
-        LIMIT ? OFFSET ?
+        LIMIT %s OFFSET %s
     """, (limit, offset))
 
     rows = cursor.fetchall()
