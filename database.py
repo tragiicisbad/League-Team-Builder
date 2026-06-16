@@ -196,7 +196,7 @@ def update_player_after_match(discord_id, assigned_role, rating_change, won):
     conn.close()
 
 
-def get_leaderboard(limit=10):
+def get_leaderboard(limit=10, offset=0):
     conn = connect()
     cursor = conn.cursor()
 
@@ -204,8 +204,8 @@ def get_leaderboard(limit=10):
     SELECT name, rank, rating, primary_role, secondary_role, wins, losses
     FROM players
     ORDER BY rating DESC
-    LIMIT ?
-    """, (limit,))
+    LIMIT ? OFFSET ?
+    """, (limit, offset))
 
     rows = cursor.fetchall()
     conn.close()

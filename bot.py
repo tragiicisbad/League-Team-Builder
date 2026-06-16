@@ -30,6 +30,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 JOIN_EMOJI = "✅"
 ADMIN_ROLE_NAME = "Customs Admin"
 PROMOTION_CHANNEL_NAME = "general"
+MATCH_HISTORY_CHANNEL_NAME = "match-history"
 RANK_ROLE_NAMES = [
     "Iron", "Bronze", "Silver", "Gold", "Platinum", "Emerald", "Diamond",
     "Master", "Grandmaster", "Challenger"
@@ -564,6 +565,8 @@ waitlist_queue = {}
 queue_locked = False
 last_blue_team = []
 last_red_team = []
+last_teams_message_id = None
+last_teams_channel_id = None
 
 
 def is_admin(ctx):
@@ -636,6 +639,169 @@ def clean_assigned_line(player):
         f"{role_emoji(assigned_role)} <@{player['discord_id']}>{avoid_warning}\n"
         f"{rank_emoji(player['rank'])} **{assigned_rating}** role rating"
     )
+
+
+def find_player_on_current_teams(member_id):
+    for team_name, team in [("blue", last_blue_team), ("red", last_red_team)]:
+        for index, player in enumerate(team):
+            if player["discord_id"] == member_id:
+                return team_name, team, index, player
+
+    return None, None, None, None
+
+
+def find_player_by_swap_arg(arg):
+    """
+    Finds a player on the current teams by mention, Discord ID, test-player ID,
+    or exact player name. This lets admins swap real players and test players.
+    """
+    cleaned_arg = str(arg).strip()
+    cleaned_arg = cleaned_arg.replace("<@", "").replace(">", "").replace("!", "")
+
+    try:
+        discord_id = int(cleaned_arg)
+        return find_player_on_current_teams(discord_id)
+    except ValueError:
+        pass
+
+    for team_name, team in [("blue", last_blue_team), ("red", last_red_team)]:
+        for index, player in enumerate(team):
+            if player["name"].lower() == cleaned_arg.lower():
+                return team_name, team, index, player
+
+    return None, None, None, None
+
+
+def player_swap_display(ctx, player):
+    member = ctx.guild.get_member(player["discord_id"]) if ctx.guild else None
+
+    if member:
+        return member.mention
+
+    return player["name"]
+
+
+def calculate_current_team_totals():
+    blue_total = sum(role_rating(p, p["assigned_role"]) for p in last_blue_team)
+    red_total = sum(role_rating(p, p["assigned_role"]) for p in last_red_team)
+    return blue_total, red_total
+
+
+def build_teams_embed(title="Balanced Teams Generated", description=None):
+    blue_total, red_total = calculate_current_team_totals()
+
+    rating_diff = abs(blue_total - red_total)
+
+    lane_diff = 0
+    for role in ROLES:
+        blue_player = next((p for p in last_blue_team if p["assigned_role"] == role), None)
+        red_player = next((p for p in last_red_team if p["assigned_role"] == role), None)
+
+        if blue_player and red_player:
+            lane_diff += abs(role_rating(blue_player, role) - role_rating(red_player, role))
+
+    role_penalty_total = (
+        sum(role_penalty(p, p["assigned_role"]) for p in last_blue_team)
+        + sum(role_penalty(p, p["assigned_role"]) for p in last_red_team)
+    )
+
+    if description is None:
+        description = "Teams were balanced by role fit, lane matchup rating, and total team rating. The active queue is now locked."
+
+    embed = discord.Embed(
+        title=title,
+        description=description,
+        color=COLOR_SUCCESS
+    )
+
+    embed.add_field(
+        name=f"Blue Team — {blue_total} Rating",
+        value="\n\n".join(clean_assigned_line(p) for p in last_blue_team),
+        inline=True
+    )
+
+    embed.add_field(
+        name=f"Red Team — {red_total} Rating",
+        value="\n\n".join(clean_assigned_line(p) for p in last_red_team),
+        inline=True
+    )
+
+    embed.add_field(
+        name="Balance Stats",
+        value=(
+            f"**Team Rating Difference:** {rating_diff}\n"
+            f"**Lane Matchup Difference:** {int(lane_diff)}\n"
+            f"**Role Penalty:** {role_penalty_total}\n"
+            f"**Waitlisted Players:** {len(waitlist_queue)}"
+        ),
+        inline=False
+    )
+
+    embed.set_footer(text="Use !swap @player1 @player2 to adjust teams. Use !result blue or !result red after the game.")
+    return embed
+
+
+def simple_match_history_team_lines(team):
+    return "\n".join(
+        f"{role_emoji(player['assigned_role'])} **{player['assigned_role']}** — {player['name']}"
+        for player in team
+    )
+
+
+async def post_generated_teams_to_match_history(guild):
+    if guild is None:
+        return
+
+    channel = discord.utils.get(guild.text_channels, name=MATCH_HISTORY_CHANNEL_NAME)
+
+    if channel is None:
+        print(f"Could not find #{MATCH_HISTORY_CHANNEL_NAME} channel.")
+        return
+
+    embed = discord.Embed(
+        title="New Match Generated",
+        color=COLOR_QUEUE
+    )
+
+    embed.add_field(
+        name="Blue Team",
+        value=simple_match_history_team_lines(last_blue_team),
+        inline=True
+    )
+
+    embed.add_field(
+        name="Red Team",
+        value=simple_match_history_team_lines(last_red_team),
+        inline=True
+    )
+
+    await channel.send(embed=embed)
+
+
+async def update_teams_message(embed=None):
+    if last_teams_message_id is None or last_teams_channel_id is None:
+        return False
+
+    channel = bot.get_channel(last_teams_channel_id)
+
+    if channel is None:
+        return False
+
+    try:
+        msg = await channel.fetch_message(last_teams_message_id)
+
+        if embed is None:
+            embed = build_teams_embed(
+                title="Teams Updated",
+                description="Teams were manually adjusted by an admin."
+            )
+
+        await msg.edit(embed=embed)
+        return True
+
+    except Exception as e:
+        print(f"Could not update teams message: {e}")
+        return False
 
 
 def add_to_queue_or_waitlist(user_id, player):
@@ -1377,7 +1543,7 @@ async def waitlist(ctx):
 
 @bot.command()
 async def clearqueue(ctx):
-    global queue_locked, last_blue_team, last_red_team
+    global queue_locked, last_blue_team, last_red_team, last_teams_message_id, last_teams_channel_id
 
     if not await require_admin(ctx):
         return
@@ -1387,6 +1553,8 @@ async def clearqueue(ctx):
     queue_locked = False
     last_blue_team = []
     last_red_team = []
+    last_teams_message_id = None
+    last_teams_channel_id = None
 
     await delete_queue_message()
 
@@ -1880,7 +2048,7 @@ async def unlockqueue(ctx):
 
 @bot.command()
 async def teams(ctx):
-    global last_blue_team, last_red_team, queue_locked
+    global last_blue_team, last_red_team, queue_locked, last_teams_message_id, last_teams_channel_id
 
     if len(player_queue) < MAX_QUEUE_SIZE:
         await send_embed(
@@ -1899,31 +2067,88 @@ async def teams(ctx):
     queue_locked = True
     await update_queue_message()
 
-    blue_total = sum(role_rating(p, p["assigned_role"]) for p in best_blue)
-    red_total = sum(role_rating(p, p["assigned_role"]) for p in best_red)
+    embed = build_teams_embed()
 
-    embed = discord.Embed(
-        title="Balanced Teams Generated",
-        description="Teams were balanced by role fit, lane matchup rating, and total team rating. The active queue is now locked.",
-        color=COLOR_SUCCESS
+    msg = await ctx.send(embed=embed)
+    last_teams_message_id = msg.id
+    last_teams_channel_id = ctx.channel.id
+
+    await post_generated_teams_to_match_history(ctx.guild)
+
+
+@bot.command()
+async def swap(ctx, player_one_arg: str, player_two_arg: str):
+    if not await require_admin(ctx):
+        return
+
+    if not last_blue_team or not last_red_team:
+        await send_embed(
+            ctx,
+            "No Active Teams",
+            "Use `!teams` before swapping players.",
+            COLOR_WARNING
+        )
+        return
+
+    team_one_name, team_one, index_one, player_one = find_player_by_swap_arg(player_one_arg)
+    team_two_name, team_two, index_two, player_two = find_player_by_swap_arg(player_two_arg)
+
+    if player_one is None or player_two is None:
+        await send_embed(
+            ctx,
+            "Player Not Found",
+            "Both players must be on the current generated teams. You can use mentions, Discord IDs, test-player IDs, or exact player names.",
+            COLOR_ERROR
+        )
+        return
+
+    player_one_display = player_swap_display(ctx, player_one)
+    player_two_display = player_swap_display(ctx, player_two)
+
+    player_one_old_role = player_one["assigned_role"]
+    player_two_old_role = player_two["assigned_role"]
+
+    if team_one_name == team_two_name:
+        # Same team swap: players keep their team, but trade roles.
+        team_one[index_one]["assigned_role"] = player_two_old_role
+        team_two[index_two]["assigned_role"] = player_one_old_role
+
+        swap_description = (
+            f"{player_one_display} and {player_two_display} swapped roles on "
+            f"**{team_one_name.capitalize()} Team**.\n"
+            f"{player_one_display}: {role_emoji(player_one_old_role)} **{player_one_old_role}** "
+            f"→ {role_emoji(player_two_old_role)} **{player_two_old_role}**\n"
+            f"{player_two_display}: {role_emoji(player_two_old_role)} **{player_two_old_role}** "
+            f"→ {role_emoji(player_one_old_role)} **{player_one_old_role}**"
+        )
+
+    else:
+        # Cross-team swap: players switch teams, but the role slots stay on each side.
+        # This keeps each team at one Top, one Jungle, one Mid, one ADC, and one Support.
+        team_one[index_one], team_two[index_two] = team_two[index_two], team_one[index_one]
+
+        team_one[index_one]["assigned_role"] = player_one_old_role
+        team_two[index_two]["assigned_role"] = player_two_old_role
+
+        swap_description = (
+            f"{player_one_display} and {player_two_display} swapped teams.\n"
+            f"{player_one_display} moved to **{team_two_name.capitalize()} Team** "
+            f"as {role_emoji(player_two_old_role)} **{player_two_old_role}**.\n"
+            f"{player_two_display} moved to **{team_one_name.capitalize()} Team** "
+            f"as {role_emoji(player_one_old_role)} **{player_one_old_role}**."
+        )
+
+    embed = build_teams_embed(
+        title="Teams Updated",
+        description=swap_description
     )
 
-    embed.add_field(name=f"Blue Team — {blue_total} Rating", value="\n\n".join(clean_assigned_line(p) for p in best_blue), inline=True)
-    embed.add_field(name=f"Red Team — {red_total} Rating", value="\n\n".join(clean_assigned_line(p) for p in best_red), inline=True)
-    embed.add_field(
-        name="Balance Stats",
-        value=(
-            f"**Team Rating Difference:** {rating_diff}\n"
-            f"**Lane Matchup Difference:** {int(lane_diff)}\n"
-            f"**Role Penalty:** {role_penalty_total}\n"
-            f"**Waitlisted Players:** {len(waitlist_queue)}"
-        ),
-        inline=False
-    )
+    updated = await update_teams_message(embed)
 
-    embed.set_footer(text="Use !result blue or !result red after the game.")
-    await ctx.send(embed=embed)
-
+    if updated:
+        await ctx.message.add_reaction("✅")
+    else:
+        await ctx.send(embed=embed)
 
 def format_result_change_lines(player_changes, sign):
     lines = []
@@ -1989,7 +2214,7 @@ def calculate_player_lobby_rating_change(player, lobby_average, base_change, won
 
 @bot.command()
 async def result(ctx, winner: str):
-    global queue_locked, last_blue_team, last_red_team
+    global queue_locked, last_blue_team, last_red_team, last_teams_message_id, last_teams_channel_id
 
     if not await require_admin(ctx):
         return
@@ -2143,6 +2368,8 @@ async def result(ctx, winner: str):
     promoted = refill_active_queue_from_waitlist()
     last_blue_team = []
     last_red_team = []
+    last_teams_message_id = None
+    last_teams_channel_id = None
 
     # Delete the old queue post after a game result, then create a fresh queue post in the same channel.
     old_queue_channel = await delete_queue_message()
@@ -2165,17 +2392,35 @@ async def result(ctx, winner: str):
     await ctx.send(embed=embed)
 
 
-@bot.command()
-async def leaderboard(ctx):
-    rows = get_leaderboard(10)
+def get_leaderboard_page(limit=10, offset=0):
+    conn = sqlite3.connect("league_bot.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT name, rank, rating, primary_role, secondary_role, wins, losses
+        FROM players
+        ORDER BY rating DESC
+        LIMIT ? OFFSET ?
+    """, (limit, offset))
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    return rows
+
+
+async def leaderboard_page(ctx, page=1):
+    per_page = 10
+    offset = (page - 1) * per_page
+    rows = get_leaderboard_page(per_page, offset)
 
     if not rows:
-        await send_embed(ctx, "Leaderboard", "No players found.", COLOR_WARNING)
+        await send_embed(ctx, "Leaderboard", f"No players found for page {page}.", COLOR_WARNING)
         return
 
     lines = []
 
-    for index, row in enumerate(rows, start=1):
+    for index, row in enumerate(rows, start=offset + 1):
         name, rank, rating, primary, secondary, wins, losses = row
         lines.append(
             f"**#{index}** {rank_emoji(rank)} **{name}** — **{rating}** rating\n"
@@ -2183,13 +2428,27 @@ async def leaderboard(ctx):
         )
 
     embed = discord.Embed(
-        title="League Customs Leaderboard",
+        title=f"League Customs Leaderboard — #{offset + 1}-{offset + len(rows)}",
         description="\n\n".join(lines),
         color=discord.Color.gold()
     )
 
     await ctx.send(embed=embed)
 
+
+@bot.command()
+async def leaderboard(ctx):
+    await leaderboard_page(ctx, page=1)
+
+
+@bot.command()
+async def leaderboard2(ctx):
+    await leaderboard_page(ctx, page=2)
+
+
+@bot.command()
+async def leaderboard3(ctx):
+    await leaderboard_page(ctx, page=3)
 
 @bot.command()
 async def history(ctx):
