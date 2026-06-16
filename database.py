@@ -1,13 +1,22 @@
 import json
 import math
-import sqlite3
+import os
 from datetime import datetime
 
-DB_NAME = "league_bot.db"
+import psycopg
+from psycopg.rows import tuple_row
+
+
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 
 def connect():
-    return sqlite3.connect(DB_NAME)
+    if not DATABASE_URL:
+        raise RuntimeError(
+            "DATABASE_URL is missing. Add PostgreSQL to Railway and attach DATABASE_URL to the bot service."
+        )
+
+    return psycopg.connect(DATABASE_URL, row_factory=tuple_row)
 
 
 def setup_database():
@@ -16,7 +25,7 @@ def setup_database():
 
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS players (
-        discord_id INTEGER PRIMARY KEY,
+        discord_id BIGINT PRIMARY KEY,
         name TEXT NOT NULL,
         rank TEXT NOT NULL,
         rating INTEGER NOT NULL,
@@ -33,15 +42,24 @@ def setup_database():
     )
     """)
 
-    cursor.execute("PRAGMA table_info(players)")
-    existing_columns = [column[1] for column in cursor.fetchall()]
+    cursor.execute("""
+    ALTER TABLE players
+    ADD COLUMN IF NOT EXISTS avoided_role TEXT DEFAULT 'None'
+    """)
 
-    if "avoided_role" not in existing_columns:
-        cursor.execute("ALTER TABLE players ADD COLUMN avoided_role TEXT DEFAULT 'None'")
+    cursor.execute("""
+    ALTER TABLE players
+    ADD COLUMN IF NOT EXISTS wins INTEGER DEFAULT 0
+    """)
+
+    cursor.execute("""
+    ALTER TABLE players
+    ADD COLUMN IF NOT EXISTS losses INTEGER DEFAULT 0
+    """)
 
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS matches (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id SERIAL PRIMARY KEY,
         date_played TEXT NOT NULL,
         winner TEXT NOT NULL,
         blue_team TEXT NOT NULL,
@@ -92,19 +110,19 @@ def save_player(discord_id, name, rank, rating, primary_role, secondary_role, av
         top_rating, jungle_rating, mid_rating, adc_rating, support_rating,
         primary_role, secondary_role, avoided_role
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
     ON CONFLICT(discord_id) DO UPDATE SET
-        name = excluded.name,
-        rank = excluded.rank,
-        rating = excluded.rating,
-        top_rating = excluded.top_rating,
-        jungle_rating = excluded.jungle_rating,
-        mid_rating = excluded.mid_rating,
-        adc_rating = excluded.adc_rating,
-        support_rating = excluded.support_rating,
-        primary_role = excluded.primary_role,
-        secondary_role = excluded.secondary_role,
-        avoided_role = excluded.avoided_role
+        name = EXCLUDED.name,
+        rank = EXCLUDED.rank,
+        rating = EXCLUDED.rating,
+        top_rating = EXCLUDED.top_rating,
+        jungle_rating = EXCLUDED.jungle_rating,
+        mid_rating = EXCLUDED.mid_rating,
+        adc_rating = EXCLUDED.adc_rating,
+        support_rating = EXCLUDED.support_rating,
+        primary_role = EXCLUDED.primary_role,
+        secondary_role = EXCLUDED.secondary_role,
+        avoided_role = EXCLUDED.avoided_role
     """, (
         discord_id, name, rank, rating,
         role_ratings["Top"],
@@ -152,7 +170,7 @@ def get_player(discord_id):
            top_rating, jungle_rating, mid_rating, adc_rating, support_rating,
            primary_role, secondary_role, avoided_role, wins, losses
     FROM players
-    WHERE discord_id = ?
+    WHERE discord_id = %s
     """, (discord_id,))
 
     row = cursor.fetchone()
@@ -178,18 +196,18 @@ def update_player_after_match(discord_id, assigned_role, rating_change, won):
     if won:
         cursor.execute(f"""
         UPDATE players
-        SET rating = rating + ?,
-            {role_column} = {role_column} + ?,
+        SET rating = rating + %s,
+            {role_column} = {role_column} + %s,
             wins = wins + 1
-        WHERE discord_id = ?
+        WHERE discord_id = %s
         """, (rating_change, rating_change, discord_id))
     else:
         cursor.execute(f"""
         UPDATE players
-        SET rating = rating + ?,
-            {role_column} = {role_column} + ?,
+        SET rating = rating + %s,
+            {role_column} = {role_column} + %s,
             losses = losses + 1
-        WHERE discord_id = ?
+        WHERE discord_id = %s
         """, (rating_change, rating_change, discord_id))
 
     conn.commit()
@@ -204,7 +222,7 @@ def get_leaderboard(limit=10, offset=0):
     SELECT name, rank, rating, primary_role, secondary_role, wins, losses
     FROM players
     ORDER BY rating DESC
-    LIMIT ? OFFSET ?
+    LIMIT %s OFFSET %s
     """, (limit, offset))
 
     rows = cursor.fetchall()
@@ -222,7 +240,7 @@ def save_match(winner, blue_team, red_team, blue_rating, red_rating, rating_chan
         date_played, winner, blue_team, red_team,
         blue_rating, red_rating, rating_change
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    VALUES (%s, %s, %s, %s, %s, %s, %s)
     """, (
         datetime.now().strftime("%Y-%m-%d %H:%M"),
         winner,
@@ -245,7 +263,7 @@ def get_match_history(limit=5):
     SELECT id, date_played, winner, blue_team, red_team, blue_rating, red_rating, rating_change
     FROM matches
     ORDER BY id DESC
-    LIMIT ?
+    LIMIT %s
     """, (limit,))
 
     rows = cursor.fetchall()
