@@ -2459,14 +2459,14 @@ async def winrate_page(ctx, page=1):
 
     embed = discord.Embed(
         title=f"🏆 Winrate Leaderboard — Page {page}",
-        description=f"Minimum **{MIN_WINRATE_GAMES} games played** required.",
+        description=f"Only players with at least **{MIN_WINRATE_GAMES} games played** are shown.",
         color=COLOR_PROFILE
     )
 
     for index, row in enumerate(rows, start=offset + 1):
         name, stored_rank, rating, primary_role, secondary_role, wins, losses = row
         games_played = wins + losses
-        winrate = round((wins / games_played) * 100, 1)
+        winrate_percent = round((wins / games_played) * 100, 1)
 
         current_rank = rank_for_rating(rating)
         medal = format_winrate_medal(index)
@@ -2474,11 +2474,9 @@ async def winrate_page(ctx, page=1):
         embed.add_field(
             name=f"{medal} {rank_emoji(current_rank)} {name}",
             value=(
-                f"**Winrate:** `{winrate}%`\n"
-                f"**Record:** `{wins}W - {losses}L`  •  **Games:** `{games_played}`\n"
-                f"**Roles:** {role_emoji(primary_role)} {primary_role} / "
-                f"{role_emoji(secondary_role)} {secondary_role}\n"
-                f"**Rating:** `{rating}`"
+                f"`{winrate_percent}% WR`  •  `{wins}W - {losses}L`  •  `{games_played} GP`\n"
+                f"{role_emoji(primary_role)} {primary_role} / "
+                f"{role_emoji(secondary_role)} {secondary_role}  •  `{rating}` rating"
             ),
             inline=False
         )
@@ -2491,6 +2489,7 @@ async def winrate_page(ctx, page=1):
 @bot.command()
 async def winrate(ctx, page: int = 1):
     await winrate_page(ctx, page=page)
+
 
 def get_leaderboard_page(limit=10, offset=0):
     conn = connect()
