@@ -1378,8 +1378,11 @@ async def profile(ctx, member: discord.Member = None):
         role_lines.append(f"{role_emoji(role)} **{role}:** {player['role_ratings'][role]}")
 
     embed = discord.Embed(title=f"{player['name']}'s Profile", color=COLOR_PROFILE)
-    embed.add_field(name="Rank", value=f"{rank_emoji(player['rank'])} {player['rank']}", inline=True)
+
     calculated_overall = calculate_overall_from_selected_roles(player)
+    current_rank = rank_for_rating(calculated_overall)
+
+    embed.add_field(name="Rank", value=f"{rank_emoji(current_rank)} {current_rank}", inline=True)
     embed.add_field(name="Overall Rating", value=str(calculated_overall), inline=True)
     embed.add_field(name="Record", value=f"{player['wins']}W / {player['losses']}L", inline=True)
     embed.add_field(
