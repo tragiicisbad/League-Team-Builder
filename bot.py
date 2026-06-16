@@ -31,6 +31,7 @@ JOIN_EMOJI = "✅"
 ADMIN_ROLE_NAME = "Customs Admin"
 PROMOTION_CHANNEL_NAME = "general"
 MATCH_HISTORY_CHANNEL_NAME = "match-history"
+WINRATE_CHANNEL_NAME = "winrates"
 RANK_ROLE_NAMES = [
     "Iron", "Bronze", "Silver", "Gold", "Platinum", "Emerald", "Diamond",
     "Master", "Grandmaster", "Challenger"
@@ -567,6 +568,7 @@ last_blue_team = []
 last_red_team = []
 last_teams_message_id = None
 last_teams_channel_id = None
+winrate_message_id = None
 
 
 def is_admin(ctx):
@@ -2402,6 +2404,8 @@ async def result(ctx, winner: str):
 
     await ctx.send(embed=embed)
 
+    await update_winrate_channel(ctx.guild)
+
 
 
 
@@ -2439,7 +2443,7 @@ def format_winrate_medal(position):
     return f"`#{position}`"
 
 
-async def winrate_page(ctx, page=1):
+def build_winrate_embed(page=1, compact_top_10=False):
     per_page = 10
 
     if page < 1:
@@ -2448,20 +2452,26 @@ async def winrate_page(ctx, page=1):
     offset = (page - 1) * per_page
     rows = get_winrate_page(per_page, offset)
 
-    if not rows:
-        await send_embed(
-            ctx,
-            "Winrate Leaderboard",
-            f"No eligible players found for page **{page}**.\n\nPlayers need at least **{MIN_WINRATE_GAMES} games played** to appear.",
-            COLOR_WARNING
-        )
-        return
+    if compact_top_10:
+        title = "🏆 Top 10 Winrates"
+        description = f"Updated after each recorded match. Minimum **{MIN_WINRATE_GAMES} games played** required."
+    else:
+        title = f"🏆 Winrate Leaderboard — Page {page}"
+        description = f"Only players with at least **{MIN_WINRATE_GAMES} games played** are shown."
 
     embed = discord.Embed(
-        title=f"🏆 Winrate Leaderboard — Page {page}",
-        description=f"Only players with at least **{MIN_WINRATE_GAMES} games played** are shown.",
+        title=title,
+        description=description,
         color=COLOR_PROFILE
     )
+
+    if not rows:
+        embed.add_field(
+            name="No eligible players yet",
+            value=f"Players need at least **{MIN_WINRATE_GAMES} games played** to appear.",
+            inline=False
+        )
+        return embed
 
     for index, row in enumerate(rows, start=offset + 1):
         name, stored_rank, rating, primary_role, secondary_role, wins, losses = row
@@ -2481,9 +2491,79 @@ async def winrate_page(ctx, page=1):
             inline=False
         )
 
-    embed.set_footer(text=f"Use !winrate {page + 1} for the next page.")
+    if compact_top_10:
+        embed.set_footer(text="This message auto-updates after every !result.")
+    else:
+        embed.set_footer(text=f"Use !winrate {page + 1} for the next page.")
+
+    return embed
+
+
+async def winrate_page(ctx, page=1):
+    embed = build_winrate_embed(page=page, compact_top_10=False)
+
+    if embed.fields and embed.fields[0].name == "No eligible players yet":
+        await send_embed(
+            ctx,
+            "Winrate Leaderboard",
+            f"No eligible players found for page **{page}**.\n\nPlayers need at least **{MIN_WINRATE_GAMES} games played** to appear.",
+            COLOR_WARNING
+        )
+        return
 
     await ctx.send(embed=embed)
+
+
+async def update_winrate_channel(guild):
+    """
+    Keeps exactly one bot winrate message in #winrates.
+    If the tracked message exists, it edits it.
+    If not, it removes older bot winrate messages and posts a fresh one.
+    """
+    global winrate_message_id
+
+    if guild is None:
+        return
+
+    channel = discord.utils.get(guild.text_channels, name=WINRATE_CHANNEL_NAME)
+
+    if channel is None:
+        print(f"Could not find #{WINRATE_CHANNEL_NAME} channel.")
+        return
+
+    embed = build_winrate_embed(page=1, compact_top_10=True)
+
+    if winrate_message_id is not None:
+        try:
+            message = await channel.fetch_message(winrate_message_id)
+            await message.edit(embed=embed)
+            return
+        except discord.NotFound:
+            winrate_message_id = None
+        except discord.Forbidden:
+            print(f"Could not edit winrate message in #{WINRATE_CHANNEL_NAME}: missing permissions.")
+            return
+        except Exception as e:
+            print(f"Could not edit winrate message: {e}")
+            winrate_message_id = None
+
+    try:
+        async for message in channel.history(limit=50):
+            if message.author == bot.user and message.embeds:
+                title = message.embeds[0].title or ""
+                if "Winrate" in title or "Winrates" in title:
+                    try:
+                        await message.delete()
+                    except Exception as e:
+                        print(f"Could not delete old winrate message: {e}")
+
+        new_message = await channel.send(embed=embed)
+        winrate_message_id = new_message.id
+
+    except discord.Forbidden:
+        print(f"Could not update #{WINRATE_CHANNEL_NAME}: missing permissions.")
+    except Exception as e:
+        print(f"Could not update winrate channel: {e}")
 
 
 @bot.command()
