@@ -40,6 +40,7 @@ MAX_QUEUE_SIZE = 10
 BASE_RATING_CHANGE = 15
 MIN_RATING_CHANGE = 5
 MAX_RATING_CHANGE = 30
+MIN_LEADERBOARD_GAMES = 5
 
 ROLES = ["Top", "Jungle", "Mid", "ADC", "Support"]
 
@@ -543,6 +544,23 @@ def reset_all_players_ratings_manual():
     conn.close()
 
     return len(players)
+
+
+
+def remove_player_from_database(discord_id):
+    conn = connect()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        DELETE FROM players
+        WHERE discord_id = %s
+    """, (discord_id,))
+
+    rows_deleted = cursor.rowcount
+    conn.commit()
+    conn.close()
+
+    return rows_deleted > 0
 
 
 def refresh_player_in_queues(discord_id):
@@ -2029,6 +2047,93 @@ async def syncrankroles(ctx):
     )
 
 
+
+
+@bot.command()
+async def removeplayer(ctx, member: discord.Member):
+    if not await require_admin(ctx):
+        return
+
+    player = get_player(member.id)
+
+    if not player:
+        await send_embed(
+            ctx,
+            "Player Not Found",
+            f"{member.display_name} is not currently in the database.",
+            COLOR_ERROR
+        )
+        return
+
+    removed = remove_player_from_database(member.id)
+
+    if not removed:
+        await send_embed(
+            ctx,
+            "Remove Failed",
+            f"Could not remove **{member.display_name}** from the database.",
+            COLOR_ERROR
+        )
+        return
+
+    player_queue.pop(member.id, None)
+    waitlist_queue.pop(member.id, None)
+    await update_queue_message()
+    await update_winrate_channel(ctx.guild)
+
+    await send_embed(
+        ctx,
+        "Player Removed",
+        (
+            f"Removed **{member.display_name}** from the database.\n"
+            "They will need to use `/signup` again if they want to play."
+        ),
+        COLOR_SUCCESS
+    )
+
+
+@bot.command()
+async def removeplayerid(ctx, discord_id: int):
+    if not await require_admin(ctx):
+        return
+
+    player = get_player(discord_id)
+
+    if not player:
+        await send_embed(
+            ctx,
+            "Player Not Found",
+            f"No player found with ID `{discord_id}`.",
+            COLOR_ERROR
+        )
+        return
+
+    removed = remove_player_from_database(discord_id)
+
+    if not removed:
+        await send_embed(
+            ctx,
+            "Remove Failed",
+            f"Could not remove **{player['name']}** from the database.",
+            COLOR_ERROR
+        )
+        return
+
+    player_queue.pop(discord_id, None)
+    waitlist_queue.pop(discord_id, None)
+    await update_queue_message()
+    await update_winrate_channel(ctx.guild)
+
+    await send_embed(
+        ctx,
+        "Player Removed",
+        (
+            f"Removed **{player['name']}** from the database.\n"
+            "They will need to use `/signup` again if they want to play."
+        ),
+        COLOR_SUCCESS
+    )
+
 @bot.command()
 async def lockqueue(ctx):
     global queue_locked
@@ -2410,6 +2515,8 @@ async def result(ctx, winner: str):
 
 
 MIN_WINRATE_GAMES = 5
+WINRATE_AUTOUPDATE_PAGES = 3
+WINRATE_PLAYERS_PER_PAGE = 10
 
 
 def get_winrate_page(limit=10, offset=0):
@@ -2443,36 +2550,7 @@ def format_winrate_medal(position):
     return f"`#{position}`"
 
 
-def build_winrate_embed(page=1, compact_top_10=False):
-    per_page = 10
-
-    if page < 1:
-        page = 1
-
-    offset = (page - 1) * per_page
-    rows = get_winrate_page(per_page, offset)
-
-    if compact_top_10:
-        title = "🏆 Top 10 Winrates"
-        description = f"Updated after each recorded match. Minimum **{MIN_WINRATE_GAMES} games played** required."
-    else:
-        title = f"🏆 Winrate Leaderboard — Page {page}"
-        description = f"Only players with at least **{MIN_WINRATE_GAMES} games played** are shown."
-
-    embed = discord.Embed(
-        title=title,
-        description=description,
-        color=COLOR_PROFILE
-    )
-
-    if not rows:
-        embed.add_field(
-            name="No eligible players yet",
-            value=f"Players need at least **{MIN_WINRATE_GAMES} games played** to appear.",
-            inline=False
-        )
-        return embed
-
+def add_winrate_rows_to_embed(embed, rows, offset):
     for index, row in enumerate(rows, start=offset + 1):
         name, stored_rank, rating, primary_role, secondary_role, wins, losses = row
         games_played = wins + losses
@@ -2491,8 +2569,43 @@ def build_winrate_embed(page=1, compact_top_10=False):
             inline=False
         )
 
+
+def build_winrate_embed(page=1, compact_top_10=False, auto_page=None):
+    per_page = WINRATE_PLAYERS_PER_PAGE
+
+    if page < 1:
+        page = 1
+
+    if auto_page is not None:
+        page = auto_page
+
+    offset = (page - 1) * per_page
+    rows = get_winrate_page(per_page, offset)
+
     if compact_top_10:
-        embed.set_footer(text="This message auto-updates after every !result.")
+        title = f"🏆 Top Winrates — Page {page}/3"
+        description = f"Auto-updated after each result. Minimum **{MIN_WINRATE_GAMES} games played** required."
+    else:
+        title = f"🏆 Winrate Leaderboard — Page {page}"
+        description = f"Only players with at least **{MIN_WINRATE_GAMES} games played** are shown."
+
+    embed = discord.Embed(
+        title=title,
+        description=description,
+        color=COLOR_PROFILE
+    )
+
+    if not rows:
+        embed.add_field(
+            name="No eligible players yet",
+            value=f"Players need at least **{MIN_WINRATE_GAMES} games played** to appear.",
+            inline=False
+        )
+    else:
+        add_winrate_rows_to_embed(embed, rows, offset)
+
+    if compact_top_10:
+        embed.set_footer(text="This #winrates message auto-updates after every !result.")
     else:
         embed.set_footer(text=f"Use !winrate {page + 1} for the next page.")
 
@@ -2516,9 +2629,8 @@ async def winrate_page(ctx, page=1):
 
 async def update_winrate_channel(guild):
     """
-    Keeps exactly one bot winrate message in #winrates.
-    If the tracked message exists, it edits it.
-    If not, it removes older bot winrate messages and posts a fresh one.
+    Keeps exactly three bot winrate messages in #winrates.
+    They show players 1-10, 11-20, and 21-30, and update after every result.
     """
     global winrate_message_id
 
@@ -2531,34 +2643,37 @@ async def update_winrate_channel(guild):
         print(f"Could not find #{WINRATE_CHANNEL_NAME} channel.")
         return
 
-    embed = build_winrate_embed(page=1, compact_top_10=True)
-
-    if winrate_message_id is not None:
-        try:
-            message = await channel.fetch_message(winrate_message_id)
-            await message.edit(embed=embed)
-            return
-        except discord.NotFound:
-            winrate_message_id = None
-        except discord.Forbidden:
-            print(f"Could not edit winrate message in #{WINRATE_CHANNEL_NAME}: missing permissions.")
-            return
-        except Exception as e:
-            print(f"Could not edit winrate message: {e}")
-            winrate_message_id = None
+    embeds = [
+        build_winrate_embed(page=page, compact_top_10=True, auto_page=page)
+        for page in range(1, WINRATE_AUTOUPDATE_PAGES + 1)
+    ]
 
     try:
-        async for message in channel.history(limit=50):
+        existing_messages = []
+
+        async for message in channel.history(limit=75):
             if message.author == bot.user and message.embeds:
                 title = message.embeds[0].title or ""
                 if "Winrate" in title or "Winrates" in title:
-                    try:
-                        await message.delete()
-                    except Exception as e:
-                        print(f"Could not delete old winrate message: {e}")
+                    existing_messages.append(message)
 
-        new_message = await channel.send(embed=embed)
-        winrate_message_id = new_message.id
+        existing_messages = list(reversed(existing_messages))
+
+        for index, embed in enumerate(embeds):
+            if index < len(existing_messages):
+                await existing_messages[index].edit(embed=embed)
+            else:
+                new_message = await channel.send(embed=embed)
+                existing_messages.append(new_message)
+
+        for extra_message in existing_messages[WINRATE_AUTOUPDATE_PAGES:]:
+            try:
+                await extra_message.delete()
+            except Exception as e:
+                print(f"Could not delete extra winrate message: {e}")
+
+        if existing_messages:
+            winrate_message_id = existing_messages[0].id
 
     except discord.Forbidden:
         print(f"Could not update #{WINRATE_CHANNEL_NAME}: missing permissions.")
@@ -2578,9 +2693,10 @@ def get_leaderboard_page(limit=10, offset=0):
     cursor.execute("""
         SELECT name, rank, rating, primary_role, secondary_role, wins, losses
         FROM players
+        WHERE (wins + losses) >= %s
         ORDER BY rating DESC
         LIMIT %s OFFSET %s
-    """, (limit, offset))
+    """, (MIN_LEADERBOARD_GAMES, limit, offset))
 
     rows = cursor.fetchall()
     conn.close()
@@ -2590,34 +2706,50 @@ def get_leaderboard_page(limit=10, offset=0):
 
 async def leaderboard_page(ctx, page=1):
     per_page = 10
+
+    if page < 1:
+        page = 1
+
     offset = (page - 1) * per_page
     rows = get_leaderboard_page(per_page, offset)
 
     if not rows:
-        await send_embed(ctx, "Leaderboard", f"No players found for page {page}.", COLOR_WARNING)
+        await send_embed(
+            ctx,
+            "Leaderboard",
+            f"No eligible players found for page **{page}**.\n\nPlayers need at least **{MIN_LEADERBOARD_GAMES} games played** to appear.",
+            COLOR_WARNING
+        )
         return
 
-    lines = []
+    embed = discord.Embed(
+        title=f"Leaderboard — Page {page}",
+        description=f"Minimum **{MIN_LEADERBOARD_GAMES} games played** required.",
+        color=COLOR_SUCCESS
+    )
 
     for index, row in enumerate(rows, start=offset + 1):
-        name, rank, rating, primary, secondary, wins, losses = row
-        lines.append(
-            f"**#{index}** {rank_emoji(rank)} **{name}** — **{rating}** rating\n"
-            f"{role_emoji(primary)} {role_emoji(secondary)} `{primary}/{secondary}` • {wins}W/{losses}L"
+        name, stored_rank, rating, primary_role, secondary_role, wins, losses = row
+        games_played = wins + losses
+        current_rank = rank_for_rating(rating)
+
+        embed.add_field(
+            name=f"`#{index}` {rank_emoji(current_rank)} {name}",
+            value=(
+                f"**Rating:** `{rating}`  •  **Record:** `{wins}W - {losses}L`  •  **Games:** `{games_played}`\n"
+                f"**Roles:** {role_emoji(primary_role)} {primary_role} / {role_emoji(secondary_role)} {secondary_role}"
+            ),
+            inline=False
         )
 
-    embed = discord.Embed(
-        title=f"League Customs Leaderboard — #{offset + 1}-{offset + len(rows)}",
-        description="\n\n".join(lines),
-        color=discord.Color.gold()
-    )
+    embed.set_footer(text=f"Use !leaderboard {page + 1} for the next page.")
 
     await ctx.send(embed=embed)
 
 
 @bot.command()
-async def leaderboard(ctx):
-    await leaderboard_page(ctx, page=1)
+async def leaderboard(ctx, page: int = 1):
+    await leaderboard_page(ctx, page=page)
 
 
 @bot.command()
