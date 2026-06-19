@@ -772,7 +772,7 @@ def build_teams_embed(title="Balanced Teams Generated", description=None):
         inline=False
     )
 
-    embed.set_footer(text="Use !swap @player1 @player2 to adjust teams. Admins can use the buttons below or !result blue/red after the game.")
+    embed.set_footer(text="Use !swap @player1 @player2 to adjust teams. Result buttons are posted in #match-history.")
     return embed
 
 
@@ -795,6 +795,7 @@ async def post_generated_teams_to_match_history(guild):
 
     embed = discord.Embed(
         title="New Match Generated",
+        description="Admins can report the winner using the buttons below.",
         color=COLOR_QUEUE
     )
 
@@ -810,7 +811,7 @@ async def post_generated_teams_to_match_history(guild):
         inline=True
     )
 
-    await channel.send(embed=embed)
+    await channel.send(embed=embed, view=ResultView())
 
 
 async def update_teams_message(embed=None):
@@ -2282,7 +2283,7 @@ async def teams(ctx):
 
     embed = build_teams_embed()
 
-    msg = await ctx.send(embed=embed, view=ResultView())
+    msg = await ctx.send(embed=embed)
     last_teams_message_id = msg.id
     last_teams_channel_id = ctx.channel.id
 
