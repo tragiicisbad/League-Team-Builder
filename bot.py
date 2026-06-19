@@ -28,7 +28,7 @@ intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 JOIN_EMOJI = "✅"
-ADMIN_ROLE_NAME = "Customs Admin"
+STAFF_ROLE_NAMES = ["Customs Admin", "Moderator"]
 PROMOTION_CHANNEL_NAME = "general"
 MATCH_HISTORY_CHANNEL_NAME = "match-history"
 WINRATE_CHANNEL_NAME = "winrates"
@@ -593,7 +593,10 @@ def is_admin(ctx):
     if ctx.author.guild_permissions.administrator:
         return True
 
-    return any(role.name == ADMIN_ROLE_NAME for role in ctx.author.roles)
+    return any(
+        role.name in STAFF_ROLE_NAMES
+        for role in ctx.author.roles
+    )
 
 
 async def require_admin(ctx):
@@ -602,7 +605,10 @@ async def require_admin(ctx):
 
     embed = discord.Embed(
         title="Admin Only",
-        description=f"You need Administrator permissions or the `{ADMIN_ROLE_NAME}` role to use this command.",
+        description=(
+            "You need Administrator permissions or one of these roles:\n"
+            + ", ".join(f"`{role}`" for role in STAFF_ROLE_NAMES)
+        ),
         color=COLOR_ERROR
     )
     await ctx.send(embed=embed)
@@ -613,7 +619,10 @@ def is_admin_member(member):
     if member.guild_permissions.administrator:
         return True
 
-    return any(role.name == ADMIN_ROLE_NAME for role in member.roles)
+    return any(
+        role.name in STAFF_ROLE_NAMES
+        for role in member.roles
+    )
 
 
 def role_rating(player, role):
