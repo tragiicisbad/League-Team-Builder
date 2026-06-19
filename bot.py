@@ -2617,22 +2617,97 @@ PLAYER_HISTORY_PER_PAGE = 5
 
 def safe_json_loads(value):
     if isinstance(value, str):
-        return json.loads(value)
+        try:
+            return json.loads(value)
+        except Exception:
+            return value
     return value
 
 
-def player_display_name_from_team(player):
-    return player.get("name", "Unknown Player")
+def normalize_history_player(raw_player):
+    """
+    Supports both newer match history dictionaries and older string-only entries.
+    """
+    if isinstance(raw_player, dict):
+        return {
+            "discord_id": raw_player.get("discord_id"),
+            "name": raw_player.get("name", "Unknown Player"),
+            "assigned_role": raw_player.get("assigned_role", raw_player.get("role", "Unknown"))
+        }
+
+    text_value = str(raw_player).replace("**", "").strip()
+    assigned_role = "Unknown"
+    name = text_value
+
+    for role in ROLES:
+        if role.lower() in text_value.lower():
+            assigned_role = role
+            break
+
+    for separator in [" — ", " - ", ": "]:
+        if separator in text_value:
+            left, right = text_value.split(separator, 1)
+            name = right.strip()
+
+            for role in ROLES:
+                if role.lower() in left.lower():
+                    assigned_role = role
+                    break
+
+            break
+
+    return {
+        "discord_id": None,
+        "name": name,
+        "assigned_role": assigned_role
+    }
+
+
+def normalize_history_team(team_value):
+    team_value = safe_json_loads(team_value)
+
+    if isinstance(team_value, dict):
+        team_value = list(team_value.values())
+
+    if isinstance(team_value, str):
+        team_value = [
+            line.strip()
+            for line in team_value.splitlines()
+            if line.strip()
+        ]
+
+    if not isinstance(team_value, list):
+        return []
+
+    return [normalize_history_player(player) for player in team_value]
+
+
+def history_team_contains_player(team, discord_id, display_name=None):
+    for player in team:
+        player_id = player.get("discord_id")
+
+        if player_id is not None:
+            try:
+                if int(player_id) == int(discord_id):
+                    return True
+            except Exception:
+                pass
+
+        # Fallback for older saved matches that only stored player names.
+        if display_name and player.get("name", "").lower() == display_name.lower():
+            return True
+
+    return False
 
 
 def player_team_history_lines(team):
     return "\n".join(
-        f"{role_emoji(player.get('assigned_role', ''))} **{player.get('assigned_role', 'Unknown')}** — {player_display_name_from_team(player)}"
+        f"{role_emoji(player.get('assigned_role', ''))} **{player.get('assigned_role', 'Unknown')}** — {player.get('name', 'Unknown Player')}"
         for player in team
     )
 
 
-def get_player_match_history(discord_id, limit=5, offset=0):
+def get_player_match_history(discord_id, display_name=None, limit=5, offset=0):
     conn = connect()
     cursor = conn.cursor()
 
@@ -2648,30 +2723,28 @@ def get_player_match_history(discord_id, limit=5, offset=0):
     found_matches = []
 
     for match_id, date_played, winner, blue_team_json, red_team_json in rows:
-        blue_team = safe_json_loads(blue_team_json)
-        red_team = safe_json_loads(red_team_json)
+        blue_team = normalize_history_team(blue_team_json)
+        red_team = normalize_history_team(red_team_json)
+        winner_text = str(winner).lower()
 
-        blue_ids = [int(player.get("discord_id", 0)) for player in blue_team]
-        red_ids = [int(player.get("discord_id", 0)) for player in red_team]
-
-        if discord_id in blue_ids:
+        if history_team_contains_player(blue_team, discord_id, display_name):
             found_matches.append({
                 "match_id": match_id,
                 "date_played": date_played,
                 "team_name": "blue",
                 "team": blue_team,
-                "winner": winner.lower(),
-                "won": winner.lower() == "blue"
+                "winner": winner_text,
+                "won": winner_text == "blue"
             })
 
-        elif discord_id in red_ids:
+        elif history_team_contains_player(red_team, discord_id, display_name):
             found_matches.append({
                 "match_id": match_id,
                 "date_played": date_played,
                 "team_name": "red",
                 "team": red_team,
-                "winner": winner.lower(),
-                "won": winner.lower() == "red"
+                "winner": winner_text,
+                "won": winner_text == "red"
             })
 
     return found_matches[offset:offset + limit]
@@ -2684,7 +2757,12 @@ async def send_player_match_history(ctx, member, page=1):
     per_page = PLAYER_HISTORY_PER_PAGE
     offset = (page - 1) * per_page
 
-    matches = get_player_match_history(member.id, limit=per_page, offset=offset)
+    matches = get_player_match_history(
+        member.id,
+        display_name=member.display_name,
+        limit=per_page,
+        offset=offset
+    )
 
     if not matches:
         await send_embed(
