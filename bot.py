@@ -609,6 +609,13 @@ async def require_admin(ctx):
     return False
 
 
+def is_admin_member(member):
+    if member.guild_permissions.administrator:
+        return True
+
+    return any(role.name == ADMIN_ROLE_NAME for role in member.roles)
+
+
 def role_rating(player, role):
     return player["role_ratings"].get(role, player["rating"])
 
@@ -765,7 +772,7 @@ def build_teams_embed(title="Balanced Teams Generated", description=None):
         inline=False
     )
 
-    embed.set_footer(text="Use !swap @player1 @player2 to adjust teams. Use !result blue or !result red after the game.")
+    embed.set_footer(text="Use !swap @player1 @player2 to adjust teams. Admins can use the buttons below or !result blue/red after the game.")
     return embed
 
 
@@ -2164,6 +2171,94 @@ async def unlockqueue(ctx):
         await send_embed(ctx, "Queue Unlocked", "The queue is open again.", COLOR_SUCCESS)
 
 
+
+class InteractionResultContext:
+    """
+    Small adapter so the result buttons can reuse the existing !result command logic.
+    """
+    def __init__(self, interaction):
+        self.interaction = interaction
+        self.author = interaction.user
+        self.guild = interaction.guild
+        self.channel = interaction.channel
+        self.message = interaction.message
+
+    async def send(self, *args, **kwargs):
+        return await self.interaction.followup.send(*args, **kwargs)
+
+
+class ResultView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.result_recorded = False
+
+    def disable_all_buttons(self):
+        for child in self.children:
+            child.disabled = True
+
+    async def handle_result(self, interaction: discord.Interaction, winner: str):
+        if not is_admin_member(interaction.user):
+            await interaction.response.send_message(
+                "Only admins can report match results.",
+                ephemeral=True
+            )
+            return
+
+        if self.result_recorded:
+            await interaction.response.send_message(
+                "A result has already been recorded for this match.",
+                ephemeral=True
+            )
+            return
+
+        self.result_recorded = True
+        self.disable_all_buttons()
+
+        await interaction.response.edit_message(view=self)
+
+        ctx = InteractionResultContext(interaction)
+        result_command = bot.get_command("result")
+
+        if result_command is None:
+            await interaction.followup.send(
+                embed=discord.Embed(
+                    title="Result Error",
+                    description="The result command could not be found.",
+                    color=COLOR_ERROR
+                )
+            )
+            return
+
+        try:
+            await result_command.callback(ctx, winner)
+        except Exception as e:
+            print(f"Result button error: {e}")
+
+            await interaction.followup.send(
+                embed=discord.Embed(
+                    title="Result Error",
+                    description="Something went wrong while recording the match result. Check Railway logs.",
+                    color=COLOR_ERROR
+                )
+            )
+
+    @discord.ui.button(
+        label="Blue Victory",
+        style=discord.ButtonStyle.primary,
+        emoji="🔵"
+    )
+    async def blue_victory(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.handle_result(interaction, "blue")
+
+    @discord.ui.button(
+        label="Red Victory",
+        style=discord.ButtonStyle.danger,
+        emoji="🔴"
+    )
+    async def red_victory(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.handle_result(interaction, "red")
+
+
 @bot.command()
 async def teams(ctx):
     global last_blue_team, last_red_team, queue_locked, last_teams_message_id, last_teams_channel_id
@@ -2187,7 +2282,7 @@ async def teams(ctx):
 
     embed = build_teams_embed()
 
-    msg = await ctx.send(embed=embed)
+    msg = await ctx.send(embed=embed, view=ResultView())
     last_teams_message_id = msg.id
     last_teams_channel_id = ctx.channel.id
 
