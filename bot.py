@@ -2610,6 +2610,126 @@ async def result(ctx, winner: str):
 
 
 
+
+
+PLAYER_HISTORY_PER_PAGE = 5
+
+
+def safe_json_loads(value):
+    if isinstance(value, str):
+        return json.loads(value)
+    return value
+
+
+def player_display_name_from_team(player):
+    return player.get("name", "Unknown Player")
+
+
+def player_team_history_lines(team):
+    return "\n".join(
+        f"{role_emoji(player.get('assigned_role', ''))} **{player.get('assigned_role', 'Unknown')}** — {player_display_name_from_team(player)}"
+        for player in team
+    )
+
+
+def get_player_match_history(discord_id, limit=5, offset=0):
+    conn = connect()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT id, date_played, winner, blue_team, red_team
+        FROM matches
+        ORDER BY id DESC
+    """)
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    found_matches = []
+
+    for match_id, date_played, winner, blue_team_json, red_team_json in rows:
+        blue_team = safe_json_loads(blue_team_json)
+        red_team = safe_json_loads(red_team_json)
+
+        blue_ids = [int(player.get("discord_id", 0)) for player in blue_team]
+        red_ids = [int(player.get("discord_id", 0)) for player in red_team]
+
+        if discord_id in blue_ids:
+            found_matches.append({
+                "match_id": match_id,
+                "date_played": date_played,
+                "team_name": "blue",
+                "team": blue_team,
+                "winner": winner.lower(),
+                "won": winner.lower() == "blue"
+            })
+
+        elif discord_id in red_ids:
+            found_matches.append({
+                "match_id": match_id,
+                "date_played": date_played,
+                "team_name": "red",
+                "team": red_team,
+                "winner": winner.lower(),
+                "won": winner.lower() == "red"
+            })
+
+    return found_matches[offset:offset + limit]
+
+
+async def send_player_match_history(ctx, member, page=1):
+    if page < 1:
+        page = 1
+
+    per_page = PLAYER_HISTORY_PER_PAGE
+    offset = (page - 1) * per_page
+
+    matches = get_player_match_history(member.id, limit=per_page, offset=offset)
+
+    if not matches:
+        await send_embed(
+            ctx,
+            "Match History",
+            f"No match history found for **{member.display_name}** on page **{page}**.",
+            COLOR_WARNING
+        )
+        return
+
+    embed = discord.Embed(
+        title=f"{member.display_name}'s Match History — Page {page}",
+        description="Shows the teammates they played with. No rating or Elo info included.",
+        color=COLOR_PROFILE
+    )
+
+    for match in matches:
+        team_icon = "🔵" if match["team_name"] == "blue" else "🔴"
+        result_text = "WIN" if match["won"] else "LOSS"
+        result_icon = "✅" if match["won"] else "❌"
+
+        embed.add_field(
+            name=f"Match #{match['match_id']} — {result_icon} {result_text} {team_icon} {match['team_name'].capitalize()} Team",
+            value=(
+                f"**Date:** {match['date_played']}\n"
+                f"{player_team_history_lines(match['team'])}"
+            ),
+            inline=False
+        )
+
+    embed.set_footer(text=f"Use !myhistory {page + 1} for your next page, or !playerhistory @player {page + 1} for another player.")
+
+    await ctx.send(embed=embed)
+
+
+@bot.command()
+async def myhistory(ctx, page: int = 1):
+    await send_player_match_history(ctx, ctx.author, page=page)
+
+
+@bot.command()
+async def playerhistory(ctx, member: discord.Member, page: int = 1):
+    await send_player_match_history(ctx, member, page=page)
+
+
 MIN_WINRATE_GAMES = 5
 WINRATE_AUTOUPDATE_PAGES = 3
 WINRATE_PLAYERS_PER_PAGE = 10
