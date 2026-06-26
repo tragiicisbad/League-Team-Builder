@@ -586,6 +586,9 @@ last_blue_team = []
 last_red_team = []
 last_teams_message_id = None
 last_teams_channel_id = None
+last_match_history_message_id = None
+last_match_history_channel_id = None
+generated_team_signatures = set()
 winrate_message_id = None
 
 
@@ -792,19 +795,10 @@ def simple_match_history_team_lines(team):
     )
 
 
-async def post_generated_teams_to_match_history(guild):
-    if guild is None:
-        return
-
-    channel = discord.utils.get(guild.text_channels, name=MATCH_HISTORY_CHANNEL_NAME)
-
-    if channel is None:
-        print(f"Could not find #{MATCH_HISTORY_CHANNEL_NAME} channel.")
-        return
-
+def build_match_history_teams_embed(title="New Match Generated", description="Admins can report the winner using the buttons below."):
     embed = discord.Embed(
-        title="New Match Generated",
-        description="Admins can report the winner using the buttons below.",
+        title=title,
+        description=description,
         color=COLOR_QUEUE
     )
 
@@ -820,7 +814,49 @@ async def post_generated_teams_to_match_history(guild):
         inline=True
     )
 
-    await channel.send(embed=embed, view=ResultView())
+    return embed
+
+
+async def post_generated_teams_to_match_history(guild):
+    global last_match_history_message_id, last_match_history_channel_id
+
+    if guild is None:
+        return
+
+    channel = discord.utils.get(guild.text_channels, name=MATCH_HISTORY_CHANNEL_NAME)
+
+    if channel is None:
+        print(f"Could not find #{MATCH_HISTORY_CHANNEL_NAME} channel.")
+        return
+
+    embed = build_match_history_teams_embed()
+    msg = await channel.send(embed=embed, view=ResultView())
+
+    last_match_history_message_id = msg.id
+    last_match_history_channel_id = channel.id
+
+
+async def update_match_history_teams_message(title="Teams Shuffled", description="Admins can report the winner using the buttons below."):
+    if last_match_history_message_id is None or last_match_history_channel_id is None:
+        return False
+
+    channel = bot.get_channel(last_match_history_channel_id)
+
+    if channel is None:
+        return False
+
+    try:
+        msg = await channel.fetch_message(last_match_history_message_id)
+        embed = build_match_history_teams_embed(
+            title=title,
+            description=description
+        )
+        await msg.edit(embed=embed, view=ResultView())
+        return True
+
+    except Exception as e:
+        print(f"Could not update match-history teams message: {e}")
+        return False
 
 
 async def update_teams_message(embed=None):
@@ -1591,7 +1627,7 @@ async def waitlist(ctx):
 
 @bot.command()
 async def clearqueue(ctx):
-    global queue_locked, last_blue_team, last_red_team, last_teams_message_id, last_teams_channel_id
+    global queue_locked, last_blue_team, last_red_team, last_teams_message_id, last_teams_channel_id, last_match_history_message_id, last_match_history_channel_id, generated_team_signatures
 
     if not await require_admin(ctx):
         return
@@ -1603,6 +1639,9 @@ async def clearqueue(ctx):
     last_red_team = []
     last_teams_message_id = None
     last_teams_channel_id = None
+    last_match_history_message_id = None
+    last_match_history_channel_id = None
+    generated_team_signatures = set()
 
     await delete_queue_message()
 
@@ -1743,6 +1782,67 @@ def find_balanced_teams(players):
             best_role_penalty = total_role_penalty
 
     return best_blue, best_red, best_rating_diff, best_lane_diff, best_role_penalty
+
+
+def team_id_set(team):
+    return frozenset(player["discord_id"] for player in team)
+
+
+def matchup_signature(blue_team, red_team):
+    """
+    Tracks player groupings while ignoring side/color.
+    This prevents !shuffle from returning the same 5-player groups with colors swapped.
+    """
+    return frozenset([
+        team_id_set(blue_team),
+        team_id_set(red_team)
+    ])
+
+
+def find_balanced_teams_excluding(players, excluded_signatures):
+    best_blue = None
+    best_red = None
+    best_score = None
+    best_rating_diff = None
+    best_lane_diff = None
+    best_role_penalty = None
+
+    for blue_group in itertools.combinations(players, 5):
+        red_group = [p for p in players if p not in blue_group]
+
+        blue_assigned, blue_penalty = best_role_assignment(list(blue_group))
+        red_assigned, red_penalty = best_role_assignment(red_group)
+
+        signature = matchup_signature(blue_assigned, red_assigned)
+
+        if signature in excluded_signatures:
+            continue
+
+        blue_total = sum(role_rating(p, p["assigned_role"]) for p in blue_assigned)
+        red_total = sum(role_rating(p, p["assigned_role"]) for p in red_assigned)
+
+        rating_diff = abs(blue_total - red_total)
+
+        lane_diff = 0
+        for role in ROLES:
+            blue_player = next(p for p in blue_assigned if p["assigned_role"] == role)
+            red_player = next(p for p in red_assigned if p["assigned_role"] == role)
+            lane_diff += abs(role_rating(blue_player, role) - role_rating(red_player, role))
+
+        total_role_penalty = blue_penalty + red_penalty
+
+        score = rating_diff + lane_diff * 2 + total_role_penalty * 3
+
+        if best_score is None or score < best_score:
+            best_score = score
+            best_blue = blue_assigned
+            best_red = red_assigned
+            best_rating_diff = rating_diff
+            best_lane_diff = lane_diff
+            best_role_penalty = total_role_penalty
+
+    return best_blue, best_red, best_rating_diff, best_lane_diff, best_role_penalty
+
 
 
 @bot.command()
@@ -2271,7 +2371,7 @@ class ResultView(discord.ui.View):
 
 @bot.command()
 async def teams(ctx):
-    global last_blue_team, last_red_team, queue_locked, last_teams_message_id, last_teams_channel_id
+    global last_blue_team, last_red_team, queue_locked, last_teams_message_id, last_teams_channel_id, generated_team_signatures
 
     if len(player_queue) < MAX_QUEUE_SIZE:
         await send_embed(
@@ -2287,6 +2387,7 @@ async def teams(ctx):
 
     last_blue_team = best_blue
     last_red_team = best_red
+    generated_team_signatures = {matchup_signature(last_blue_team, last_red_team)}
     queue_locked = True
     await update_queue_message()
 
@@ -2297,6 +2398,76 @@ async def teams(ctx):
     last_teams_channel_id = ctx.channel.id
 
     await post_generated_teams_to_match_history(ctx.guild)
+
+
+@bot.command()
+async def shuffle(ctx):
+    global last_blue_team, last_red_team, generated_team_signatures
+
+    if not await require_admin(ctx):
+        return
+
+    if not last_blue_team or not last_red_team:
+        await send_embed(
+            ctx,
+            "No Active Teams",
+            "Use `!teams` before using `!shuffle`.",
+            COLOR_WARNING
+        )
+        return
+
+    players = last_blue_team + last_red_team
+
+    if not generated_team_signatures:
+        generated_team_signatures = {matchup_signature(last_blue_team, last_red_team)}
+
+    best_blue, best_red, rating_diff, lane_diff, role_penalty_total = find_balanced_teams_excluding(
+        players,
+        generated_team_signatures
+    )
+
+    if best_blue is None or best_red is None:
+        await send_embed(
+            ctx,
+            "Shuffle Unavailable",
+            "The bot could not find another unique team split for these 10 players.",
+            COLOR_WARNING
+        )
+        return
+
+    old_signature_count = len(generated_team_signatures)
+
+    last_blue_team = best_blue
+    last_red_team = best_red
+    generated_team_signatures.add(matchup_signature(last_blue_team, last_red_team))
+
+    embed = build_teams_embed(
+        title="Teams Shuffled",
+        description=(
+            "Teams were remade using the same 10 players, while avoiding the previous proposed team split.\n"
+            f"Unique team split #{old_signature_count + 1} for this match."
+        )
+    )
+
+    updated_main = await update_teams_message(embed)
+    updated_history = await update_match_history_teams_message(
+        title="Teams Shuffled",
+        description="Admins can report the winner using the buttons below."
+    )
+
+    if not updated_main:
+        await ctx.send(embed=embed)
+
+    if not updated_history:
+        await post_generated_teams_to_match_history(ctx.guild)
+
+    await send_embed(
+        ctx,
+        "Teams Shuffled",
+        "Generated a new unique team split. The teams message and #match-history message were updated.",
+        COLOR_SUCCESS
+    )
+
 
 
 @bot.command()
@@ -2437,7 +2608,7 @@ def calculate_player_lobby_rating_change(player, lobby_average, base_change, won
 
 @bot.command()
 async def result(ctx, winner: str):
-    global queue_locked, last_blue_team, last_red_team, last_teams_message_id, last_teams_channel_id
+    global queue_locked, last_blue_team, last_red_team, last_teams_message_id, last_teams_channel_id, last_match_history_message_id, last_match_history_channel_id, generated_team_signatures
 
     if not await require_admin(ctx):
         return
