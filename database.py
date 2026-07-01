@@ -39,7 +39,8 @@ def setup_database():
         avoided_role TEXT DEFAULT 'None',
         wins INTEGER DEFAULT 0,
         losses INTEGER DEFAULT 0,
-        streak INTEGER DEFAULT 0
+        streak INTEGER DEFAULT 0,
+        season_rating_change INTEGER DEFAULT 0
     )
     """)
 
@@ -61,6 +62,11 @@ def setup_database():
     cursor.execute("""
     ALTER TABLE players
     ADD COLUMN IF NOT EXISTS streak INTEGER DEFAULT 0
+    """)
+
+    cursor.execute("""
+    ALTER TABLE players
+    ADD COLUMN IF NOT EXISTS season_rating_change INTEGER DEFAULT 0
     """)
 
     cursor.execute("""
@@ -95,7 +101,8 @@ def setup_database():
         avoided_role TEXT DEFAULT 'None',
         wins INTEGER DEFAULT 0,
         losses INTEGER DEFAULT 0,
-        streak INTEGER DEFAULT 0
+        streak INTEGER DEFAULT 0,
+        season_rating_change INTEGER DEFAULT 0
     )
     """)
 
@@ -203,7 +210,8 @@ def row_to_player(row):
         "avoided_role": row[11] or "None",
         "wins": row[12],
         "losses": row[13],
-        "streak": row[14] if len(row) > 14 and row[14] is not None else 0
+        "streak": row[14] if len(row) > 14 and row[14] is not None else 0,
+        "season_rating_change": row[15] if len(row) > 15 and row[15] is not None else 0
     }
 
 
@@ -214,7 +222,7 @@ def get_player(discord_id):
     cursor.execute("""
     SELECT discord_id, name, rank, rating,
            top_rating, jungle_rating, mid_rating, adc_rating, support_rating,
-           primary_role, secondary_role, avoided_role, wins, losses, streak
+           primary_role, secondary_role, avoided_role, wins, losses, streak, season_rating_change
     FROM players
     WHERE discord_id = %s
     """, (discord_id,))
@@ -283,9 +291,10 @@ def update_player_after_match(discord_id, assigned_role, rating_change=None, won
         SET rating = rating + %s,
             {role_column} = {role_column} + %s,
             wins = wins + 1,
-            streak = %s
+            streak = %s,
+            season_rating_change = season_rating_change + %s
         WHERE discord_id = %s
-        """, (final_rating_change, final_rating_change, new_streak, discord_id))
+        """, (final_rating_change, final_rating_change, new_streak, final_rating_change, discord_id))
     else:
         new_streak = current_streak - 1 if current_streak < 0 else -1
         cursor.execute(f"""
@@ -293,9 +302,10 @@ def update_player_after_match(discord_id, assigned_role, rating_change=None, won
         SET rating = rating + %s,
             {role_column} = {role_column} + %s,
             losses = losses + 1,
-            streak = %s
+            streak = %s,
+            season_rating_change = season_rating_change + %s
         WHERE discord_id = %s
-        """, (final_rating_change, final_rating_change, new_streak, discord_id))
+        """, (final_rating_change, final_rating_change, new_streak, final_rating_change, discord_id))
 
     conn.commit()
     conn.close()
@@ -323,7 +333,8 @@ def drop_all_role_ratings_to_nearest_hundred():
             support_rating = FLOOR(support_rating / 100.0)::int * 100,
             wins = 0,
             losses = 0,
-            streak = 0
+            streak = 0,
+            season_rating_change = 0
     """)
 
     cursor.execute("""
@@ -391,14 +402,14 @@ def full_season_rollover(season_name="Season 1"):
             discord_id, name, rank, rating,
             top_rating, jungle_rating, mid_rating, adc_rating, support_rating,
             primary_role, secondary_role, avoided_role,
-            wins, losses, streak
+            wins, losses, streak, season_rating_change
         )
         SELECT
             %s, %s,
             discord_id, name, rank, rating,
             top_rating, jungle_rating, mid_rating, adc_rating, support_rating,
             primary_role, secondary_role, avoided_role,
-            wins, losses, streak
+            wins, losses, streak, season_rating_change
         FROM players
     """, (season_name, archived_at))
 
@@ -428,7 +439,8 @@ def full_season_rollover(season_name="Season 1"):
             support_rating = FLOOR(support_rating / 100.0)::int * 100,
             wins = 0,
             losses = 0,
-            streak = 0
+            streak = 0,
+            season_rating_change = 0
     """)
 
     cursor.execute("""
@@ -489,7 +501,7 @@ def get_leaderboard(limit=10, offset=0):
     cursor = conn.cursor()
 
     cursor.execute("""
-    SELECT name, rank, rating, primary_role, secondary_role, wins, losses
+    SELECT name, rank, rating, primary_role, secondary_role, wins, losses, season_rating_change
     FROM players
     ORDER BY rating DESC
     LIMIT %s OFFSET %s

@@ -107,6 +107,20 @@ def streak_display(streak):
     return "—"
 
 
+def format_season_rating_difference(season_rating_change):
+    """
+    Shows actual rating gained/lost from completed games this season.
+    Manual admin rating/rank changes do not affect this number.
+    """
+    season_rating_change = season_rating_change or 0
+
+    if season_rating_change > 0:
+        return f"📈 +{season_rating_change}"
+    if season_rating_change < 0:
+        return f"📉 {season_rating_change}"
+    return "➖ +0"
+
+
 def calculate_streak_rating_change(current_streak, won):
     base_change = 30
     bonus_per_streak_game = 5
@@ -470,7 +484,8 @@ def reset_player_ratings_manual(discord_id):
             adc_rating = %s,
             support_rating = %s,
             wins = 0,
-            losses = 0
+            losses = 0,
+            season_rating_change = 0
         WHERE discord_id = %s
     """, (
         base_rating,
@@ -552,7 +567,8 @@ def reset_all_players_ratings_manual():
                 adc_rating = %s,
                 support_rating = %s,
                 wins = 0,
-                losses = 0
+                losses = 0,
+                season_rating_change = 0
             WHERE discord_id = %s
         """, (
             base_rating,
@@ -617,9 +633,10 @@ def rollback_player_match_update(discord_id, assigned_role, role_rating_delta, w
         SET {column} = {column} + %s,
             wins = GREATEST(wins + %s, 0),
             losses = GREATEST(losses + %s, 0),
-            streak = %s
+            streak = %s,
+            season_rating_change = season_rating_change + %s
         WHERE discord_id = %s
-    """, (role_rating_delta, wins_delta, losses_delta, previous_streak, discord_id))
+    """, (role_rating_delta, wins_delta, losses_delta, previous_streak, role_rating_delta, discord_id))
 
     rows_changed = cursor.rowcount
     conn.commit()
@@ -3316,7 +3333,7 @@ def get_winrate_page(limit=10, offset=0):
     cursor = conn.cursor()
 
     cursor.execute("""
-        SELECT name, rank, rating, primary_role, secondary_role, wins, losses
+        SELECT name, rank, rating, primary_role, secondary_role, wins, losses, season_rating_change
         FROM players
         WHERE (wins + losses) >= %s
         ORDER BY
@@ -3344,7 +3361,7 @@ def format_winrate_medal(position):
 
 def add_winrate_rows_to_embed(embed, rows, offset):
     for index, row in enumerate(rows, start=offset + 1):
-        name, stored_rank, rating, primary_role, secondary_role, wins, losses = row
+        name, stored_rank, rating, primary_role, secondary_role, wins, losses, season_rating_change = row
         games_played = wins + losses
         winrate_percent = round((wins / games_played) * 100, 1)
 
@@ -3355,8 +3372,10 @@ def add_winrate_rows_to_embed(embed, rows, offset):
             name=f"{medal} {rank_emoji(current_rank)} {name}",
             value=(
                 f"`{winrate_percent}% WR`  •  `{wins}W - {losses}L`  •  `{games_played} GP`\n"
+                f"{format_season_rating_difference(season_rating_change)} Season Rating\n"
                 f"{role_emoji(primary_role)} {primary_role} / "
-                f"{role_emoji(secondary_role)} {secondary_role}  •  `{rating}` rating"
+                f"{role_emoji(secondary_role)} {secondary_role}  •  "
+                f"{rank_emoji(current_rank)} `{rating}`"
             ),
             inline=False
         )
@@ -3376,7 +3395,7 @@ def build_winrate_embed(page=1, compact_top_10=False, auto_page=None):
 
     if compact_top_10:
         title = f"🏆 Top Winrates — Page {page}/3"
-        description = f"Auto-updated after each result. Minimum **{MIN_WINRATE_GAMES} games played** required."
+        description = f"Auto-updated after each result. Minimum **{MIN_WINRATE_GAMES} games played** required. Season Rating shows actual rating gained/lost from recorded games."
     else:
         title = f"🏆 Winrate Leaderboard — Page {page}"
         description = f"Only players with at least **{MIN_WINRATE_GAMES} games played** are shown."
