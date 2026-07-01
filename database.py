@@ -76,6 +76,45 @@ def setup_database():
     )
     """)
 
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS season_player_history (
+        id SERIAL PRIMARY KEY,
+        season_name TEXT NOT NULL,
+        archived_at TEXT NOT NULL,
+        discord_id BIGINT NOT NULL,
+        name TEXT NOT NULL,
+        rank TEXT NOT NULL,
+        rating INTEGER NOT NULL,
+        top_rating INTEGER NOT NULL,
+        jungle_rating INTEGER NOT NULL,
+        mid_rating INTEGER NOT NULL,
+        adc_rating INTEGER NOT NULL,
+        support_rating INTEGER NOT NULL,
+        primary_role TEXT NOT NULL,
+        secondary_role TEXT NOT NULL,
+        avoided_role TEXT DEFAULT 'None',
+        wins INTEGER DEFAULT 0,
+        losses INTEGER DEFAULT 0,
+        streak INTEGER DEFAULT 0
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS season_match_history (
+        id SERIAL PRIMARY KEY,
+        season_name TEXT NOT NULL,
+        archived_at TEXT NOT NULL,
+        original_match_id INTEGER NOT NULL,
+        date_played TEXT NOT NULL,
+        winner TEXT NOT NULL,
+        blue_team TEXT NOT NULL,
+        red_team TEXT NOT NULL,
+        blue_rating INTEGER NOT NULL,
+        red_rating INTEGER NOT NULL,
+        rating_change INTEGER NOT NULL
+    )
+    """)
+
     conn.commit()
     conn.close()
 
@@ -326,6 +365,122 @@ def drop_all_role_ratings_to_nearest_hundred():
     conn.close()
 
     return updated_count
+
+
+
+def full_season_rollover(season_name="Season 1"):
+    """
+    Full season rollover:
+    1. Archives current player standings into season_player_history.
+    2. Archives current match history into season_match_history.
+    3. Drops every role rating down to the nearest hundred.
+    4. Recalculates overall rating from selected primary/secondary roles.
+    5. Resets wins, losses, and streaks to 0.
+    6. Clears current match history.
+
+    It does not delete player profiles.
+    """
+    conn = connect()
+    cursor = conn.cursor()
+
+    archived_at = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    cursor.execute("""
+        INSERT INTO season_player_history (
+            season_name, archived_at,
+            discord_id, name, rank, rating,
+            top_rating, jungle_rating, mid_rating, adc_rating, support_rating,
+            primary_role, secondary_role, avoided_role,
+            wins, losses, streak
+        )
+        SELECT
+            %s, %s,
+            discord_id, name, rank, rating,
+            top_rating, jungle_rating, mid_rating, adc_rating, support_rating,
+            primary_role, secondary_role, avoided_role,
+            wins, losses, streak
+        FROM players
+    """, (season_name, archived_at))
+
+    archived_players = cursor.rowcount
+
+    cursor.execute("""
+        INSERT INTO season_match_history (
+            season_name, archived_at,
+            original_match_id, date_played, winner,
+            blue_team, red_team, blue_rating, red_rating, rating_change
+        )
+        SELECT
+            %s, %s,
+            id, date_played, winner,
+            blue_team, red_team, blue_rating, red_rating, rating_change
+        FROM matches
+    """, (season_name, archived_at))
+
+    archived_matches = cursor.rowcount
+
+    cursor.execute("""
+        UPDATE players
+        SET top_rating = FLOOR(top_rating / 100.0)::int * 100,
+            jungle_rating = FLOOR(jungle_rating / 100.0)::int * 100,
+            mid_rating = FLOOR(mid_rating / 100.0)::int * 100,
+            adc_rating = FLOOR(adc_rating / 100.0)::int * 100,
+            support_rating = FLOOR(support_rating / 100.0)::int * 100,
+            wins = 0,
+            losses = 0,
+            streak = 0
+    """)
+
+    cursor.execute("""
+        SELECT discord_id, primary_role, secondary_role,
+               top_rating, jungle_rating, mid_rating, adc_rating, support_rating
+        FROM players
+    """)
+
+    players = cursor.fetchall()
+    updated_players = 0
+
+    for row in players:
+        discord_id, primary_role, secondary_role, top, jungle, mid, adc, support = row
+
+        role_ratings = {
+            "Top": top,
+            "Jungle": jungle,
+            "Mid": mid,
+            "ADC": adc,
+            "Support": support
+        }
+
+        def selected_rating(role):
+            if role == "Fill":
+                return round(sum(role_ratings.values()) / len(role_ratings))
+            return role_ratings[role]
+
+        new_overall = round((selected_rating(primary_role) + selected_rating(secondary_role)) / 2)
+
+        cursor.execute("""
+            UPDATE players
+            SET rating = %s
+            WHERE discord_id = %s
+        """, (new_overall, discord_id))
+
+        updated_players += 1
+
+    cursor.execute("DELETE FROM matches")
+    deleted_matches = cursor.rowcount
+
+    cursor.execute("ALTER SEQUENCE matches_id_seq RESTART WITH 1")
+
+    conn.commit()
+    conn.close()
+
+    return {
+        "season_name": season_name,
+        "archived_players": archived_players,
+        "archived_matches": archived_matches,
+        "updated_players": updated_players,
+        "deleted_matches": deleted_matches
+    }
 
 
 

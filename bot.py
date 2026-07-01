@@ -16,7 +16,8 @@ from database import (
     save_match,
     get_match_history,
     calculate_elo_change,
-    drop_all_role_ratings_to_nearest_hundred
+    drop_all_role_ratings_to_nearest_hundred,
+    full_season_rollover
 )
 
 load_dotenv()
@@ -2231,6 +2232,65 @@ async def season2ratings(ctx):
             f"Synced rank roles for **{synced_count}** players.\n\n"
             "Overall rating was recalculated from each player's selected primary and secondary roles.\n"
             "**Wins, losses, and streaks were reset to 0.**"
+        ),
+        COLOR_SUCCESS
+    )
+
+
+
+@bot.command()
+async def seasonrollover(ctx, *, season_name: str = "Season 1"):
+    global queue_locked, last_blue_team, last_red_team, last_teams_message_id, last_teams_channel_id
+    global last_match_history_message_id, last_match_history_channel_id, generated_team_signatures
+    global last_result_rollback
+
+    if not await require_admin(ctx):
+        return
+
+    result = full_season_rollover(season_name)
+
+    synced_count = 0
+
+    conn = connect()
+    cursor = conn.cursor()
+    cursor.execute("SELECT discord_id FROM players")
+    rows = cursor.fetchall()
+    conn.close()
+
+    for (discord_id,) in rows:
+        player = get_player(discord_id)
+        member = ctx.guild.get_member(discord_id) if ctx.guild else None
+
+        if player and member:
+            await sync_member_rank_role(member, player["rating"])
+            synced_count += 1
+
+    player_queue.clear()
+    waitlist_queue.clear()
+    queue_locked = False
+    last_blue_team = []
+    last_red_team = []
+    last_teams_message_id = None
+    last_teams_channel_id = None
+    last_match_history_message_id = None
+    last_match_history_channel_id = None
+    generated_team_signatures = set()
+    last_result_rollback = None
+
+    await delete_queue_message()
+    await update_winrate_channel(ctx.guild)
+
+    await send_embed(
+        ctx,
+        "Season Rollover Complete",
+        (
+            f"Archived **{result['archived_players']}** player standings for **{result['season_name']}**.\n"
+            f"Archived **{result['archived_matches']}** matches.\n"
+            f"Dropped every role rating down to the nearest hundred.\n"
+            f"Reset wins, losses, and streaks to **0**.\n"
+            f"Cleared **{result['deleted_matches']}** active match history entries.\n"
+            f"Synced rank roles for **{synced_count}** players.\n\n"
+            "Player profiles were kept. No announcement was posted."
         ),
         COLOR_SUCCESS
     )
