@@ -1,6 +1,7 @@
 import os
 import itertools
 import json
+import copy
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
@@ -37,9 +38,9 @@ RANK_ROLE_NAMES = [
     "Master", "Grandmaster", "Challenger"
 ]
 MAX_QUEUE_SIZE = 10
-BASE_RATING_CHANGE = 15
-MIN_RATING_CHANGE = 5
-MAX_RATING_CHANGE = 30
+BASE_RATING_CHANGE = 30
+MIN_RATING_CHANGE = 30
+MAX_RATING_CHANGE = 50
 MIN_LEADERBOARD_GAMES = 5
 
 ROLES = ["Top", "Jungle", "Mid", "ADC", "Support"]
@@ -94,6 +95,27 @@ def rank_emoji(rank):
 
 def role_emoji(role):
     return ROLE_EMOJIS.get(role, "")
+
+
+def streak_display(streak):
+    if streak > 0:
+        return f"🔥 {streak}W"
+    if streak < 0:
+        return f"❄️ {abs(streak)}L"
+    return "—"
+
+
+def calculate_streak_rating_change(current_streak, won):
+    base_change = 30
+    bonus_per_streak_game = 5
+    max_change = 50
+
+    if won:
+        streak_bonus_steps = current_streak if current_streak > 0 else 0
+        return min(base_change + (streak_bonus_steps * bonus_per_streak_game), max_change)
+
+    streak_bonus_steps = abs(current_streak) if current_streak < 0 else 0
+    return -min(base_change + (streak_bonus_steps * bonus_per_streak_game), max_change)
 
 
 def option_emoji(emoji_text):
@@ -547,6 +569,63 @@ def reset_all_players_ratings_manual():
 
 
 
+
+def get_latest_match_id():
+    conn = connect()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT id FROM matches ORDER BY id DESC LIMIT 1")
+    row = cursor.fetchone()
+
+    conn.close()
+
+    if not row:
+        return None
+
+    return row[0]
+
+
+def delete_match_by_id(match_id):
+    if match_id is None:
+        return False
+
+    conn = connect()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        DELETE FROM matches
+        WHERE id = %s
+    """, (match_id,))
+
+    rows_deleted = cursor.rowcount
+    conn.commit()
+    conn.close()
+
+    return rows_deleted > 0
+
+
+def rollback_player_match_update(discord_id, assigned_role, role_rating_delta, wins_delta, losses_delta, previous_streak=0):
+    column = role_column(assigned_role)
+
+    conn = connect()
+    cursor = conn.cursor()
+
+    cursor.execute(f"""
+        UPDATE players
+        SET {column} = {column} + %s,
+            wins = GREATEST(wins + %s, 0),
+            losses = GREATEST(losses + %s, 0),
+            streak = %s
+        WHERE discord_id = %s
+    """, (role_rating_delta, wins_delta, losses_delta, previous_streak, discord_id))
+
+    rows_changed = cursor.rowcount
+    conn.commit()
+    conn.close()
+
+    return rows_changed > 0
+
+
 def remove_player_from_database(discord_id):
     conn = connect()
     cursor = conn.cursor()
@@ -589,6 +668,7 @@ last_teams_channel_id = None
 last_match_history_message_id = None
 last_match_history_channel_id = None
 generated_team_signatures = set()
+last_result_rollback = None
 winrate_message_id = None
 
 
@@ -1466,6 +1546,7 @@ async def profile(ctx, member: discord.Member = None):
     embed.add_field(name="Rank", value=f"{rank_emoji(current_rank)} {current_rank}", inline=True)
     embed.add_field(name="Overall Rating", value=str(calculated_overall), inline=True)
     embed.add_field(name="Record", value=f"{player['wins']}W / {player['losses']}L", inline=True)
+    embed.add_field(name="Current Streak", value=streak_display(player.get("streak", 0)), inline=True)
     embed.add_field(
         name="Preferred Roles",
         value=(
@@ -2608,7 +2689,7 @@ def calculate_player_lobby_rating_change(player, lobby_average, base_change, won
 
 @bot.command()
 async def result(ctx, winner: str):
-    global queue_locked, last_blue_team, last_red_team, last_teams_message_id, last_teams_channel_id, last_match_history_message_id, last_match_history_channel_id, generated_team_signatures
+    global queue_locked, last_blue_team, last_red_team, last_teams_message_id, last_teams_channel_id, last_match_history_message_id, last_match_history_channel_id, generated_team_signatures, last_result_rollback
 
     if not await require_admin(ctx):
         return
@@ -2622,6 +2703,25 @@ async def result(ctx, winner: str):
     if not last_blue_team or not last_red_team:
         await send_embed(ctx, "No Teams Found", "Use `!teams` before recording a result.", COLOR_WARNING)
         return
+
+    # Save the current match and queue state so !rollback can undo a wrong result.
+    last_result_rollback = {
+        "winner": winner,
+        "blue_team": copy.deepcopy(last_blue_team),
+        "red_team": copy.deepcopy(last_red_team),
+        "player_queue": copy.deepcopy(player_queue),
+        "waitlist_queue": copy.deepcopy(waitlist_queue),
+        "queue_locked": queue_locked,
+        "queue_channel_id": queue_channel_id,
+        "queue_message_id": queue_message_id,
+        "last_teams_message_id": last_teams_message_id,
+        "last_teams_channel_id": last_teams_channel_id,
+        "last_match_history_message_id": last_match_history_message_id,
+        "last_match_history_channel_id": last_match_history_channel_id,
+        "generated_team_signatures": copy.deepcopy(generated_team_signatures),
+        "player_changes": [],
+        "match_id": None
+    }
 
     blue_rating = sum(role_rating(p, p["assigned_role"]) for p in last_blue_team)
     red_rating = sum(role_rating(p, p["assigned_role"]) for p in last_red_team)
@@ -2645,12 +2745,8 @@ async def result(ctx, winner: str):
     promoted_players = []
 
     for player in winning_team:
-        player_change = calculate_player_lobby_rating_change(
-            player=player,
-            lobby_average=lobby_average,
-            base_change=base_rating_change,
-            won=True
-        )
+        previous_streak = player.get("streak", 0)
+        player_change = calculate_streak_rating_change(previous_streak, True)
 
         promotion = check_role_promotion(
             player,
@@ -2661,39 +2757,63 @@ async def result(ctx, winner: str):
         if promotion:
             promoted_players.append(promotion)
 
-        update_player_after_match(
+        update_result = update_player_after_match(
             player["discord_id"],
             player["assigned_role"],
             player_change,
             won=True
         )
 
+        if isinstance(update_result, tuple):
+            player_change, new_streak = update_result
+        else:
+            new_streak = previous_streak + 1 if previous_streak > 0 else 1
+
         new_overall = update_overall_rating_from_selected_roles(player["discord_id"])
         member = ctx.guild.get_member(player["discord_id"]) if ctx.guild else None
         await sync_member_rank_role(member, new_overall)
+
+        last_result_rollback["player_changes"].append({
+            "discord_id": player["discord_id"],
+            "assigned_role": player["assigned_role"],
+            "role_rating_delta": -player_change,
+            "wins_delta": -1,
+            "losses_delta": 0,
+            "previous_streak": previous_streak
+        })
 
         winner_changes.append((player, player_change))
 
     for player in losing_team:
-        player_change = calculate_player_lobby_rating_change(
-            player=player,
-            lobby_average=lobby_average,
-            base_change=base_rating_change,
+        previous_streak = player.get("streak", 0)
+        player_change = calculate_streak_rating_change(previous_streak, False)
+
+        update_result = update_player_after_match(
+            player["discord_id"],
+            player["assigned_role"],
+            player_change,
             won=False
         )
 
-        update_player_after_match(
-            player["discord_id"],
-            player["assigned_role"],
-            -player_change,
-            won=False
-        )
+        if isinstance(update_result, tuple):
+            player_change, new_streak = update_result
+        else:
+            new_streak = previous_streak - 1 if previous_streak < 0 else -1
 
         new_overall = update_overall_rating_from_selected_roles(player["discord_id"])
         member = ctx.guild.get_member(player["discord_id"]) if ctx.guild else None
         await sync_member_rank_role(member, new_overall)
 
-        loser_changes.append((player, player_change))
+        last_result_rollback["player_changes"].append({
+            "discord_id": player["discord_id"],
+            "assigned_role": player["assigned_role"],
+            "role_rating_delta": -player_change,
+            "wins_delta": 0,
+            "losses_delta": -1,
+            "previous_streak": previous_streak
+        })
+
+        loser_changes.append((player, abs(player_change)))
 
     blue_names = [f"{role_emoji(p['assigned_role'])} {p['assigned_role']}: {p['name']}" for p in last_blue_team]
     red_names = [f"{role_emoji(p['assigned_role'])} {p['assigned_role']}: {p['name']}" for p in last_red_team]
@@ -2706,6 +2826,9 @@ async def result(ctx, winner: str):
         red_rating=red_rating,
         rating_change=base_rating_change
     )
+
+    if last_result_rollback is not None:
+        last_result_rollback["match_id"] = get_latest_match_id()
 
     color = COLOR_BLUE_TEAM if winner == "blue" else COLOR_RED_TEAM
 
@@ -2786,6 +2909,96 @@ async def result(ctx, winner: str):
     await ctx.send(embed=embed)
 
     await update_winrate_channel(ctx.guild)
+
+
+@bot.command()
+async def rollback(ctx):
+    global queue_locked, last_blue_team, last_red_team, last_teams_message_id, last_teams_channel_id
+    global last_match_history_message_id, last_match_history_channel_id, generated_team_signatures
+    global player_queue, waitlist_queue, last_result_rollback
+
+    if not await require_admin(ctx):
+        return
+
+    if last_result_rollback is None:
+        await send_embed(
+            ctx,
+            "No Rollback Available",
+            "There is no recorded result available to rollback. Rollback only works for the most recent result since the last bot restart.",
+            COLOR_WARNING
+        )
+        return
+
+    rollback_data = last_result_rollback
+
+    # Undo rating, role rating, wins, and losses changes.
+    for change in rollback_data["player_changes"]:
+        rollback_player_match_update(
+            discord_id=change["discord_id"],
+            assigned_role=change["assigned_role"],
+            role_rating_delta=change["role_rating_delta"],
+            wins_delta=change["wins_delta"],
+            losses_delta=change["losses_delta"],
+            previous_streak=change.get("previous_streak", 0)
+        )
+
+        new_overall = update_overall_rating_from_selected_roles(change["discord_id"])
+        member = ctx.guild.get_member(change["discord_id"]) if ctx.guild else None
+        await sync_member_rank_role(member, new_overall)
+
+    # Remove the wrong result from match history.
+    deleted_match = delete_match_by_id(rollback_data.get("match_id"))
+
+    # Restore teams and queue state so the correct winner can be selected.
+    last_blue_team = copy.deepcopy(rollback_data["blue_team"])
+    last_red_team = copy.deepcopy(rollback_data["red_team"])
+    player_queue = copy.deepcopy(rollback_data["player_queue"])
+    waitlist_queue = copy.deepcopy(rollback_data["waitlist_queue"])
+    queue_locked = True
+
+    last_teams_message_id = rollback_data.get("last_teams_message_id")
+    last_teams_channel_id = rollback_data.get("last_teams_channel_id")
+    last_match_history_message_id = rollback_data.get("last_match_history_message_id")
+    last_match_history_channel_id = rollback_data.get("last_match_history_channel_id")
+    generated_team_signatures = copy.deepcopy(rollback_data.get("generated_team_signatures", set()))
+
+    # Delete the post-result queue message, then recreate the pre-result locked queue.
+    old_queue_channel = bot.get_channel(rollback_data.get("queue_channel_id")) if rollback_data.get("queue_channel_id") else ctx.channel
+    await delete_queue_message()
+    await create_queue_message(old_queue_channel, replace_existing=False)
+    await update_queue_message()
+
+    main_embed = build_teams_embed(
+        title="Result Rolled Back",
+        description="The previous result was undone. Admins can now select the correct winner."
+    )
+
+    await update_teams_message(main_embed)
+
+    history_updated = await update_match_history_teams_message(
+        title="Result Rolled Back",
+        description="The previous result was undone. Admins can report the correct winner using the buttons below."
+    )
+
+    if not history_updated:
+        await post_generated_teams_to_match_history(ctx.guild)
+
+    await update_winrate_channel(ctx.guild)
+
+    wrong_winner = rollback_data.get("winner", "unknown").capitalize()
+    last_result_rollback = None
+
+    await send_embed(
+        ctx,
+        "Rollback Complete",
+        (
+            f"Undid the **{wrong_winner}** result.\n"
+            f"Match history entry deleted: **{'Yes' if deleted_match else 'No'}**\n\n"
+            "The teams have been restored and the result buttons have been re-enabled in #match-history."
+        ),
+        COLOR_SUCCESS
+    )
+
 
 
 

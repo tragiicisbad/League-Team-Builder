@@ -38,7 +38,8 @@ def setup_database():
         secondary_role TEXT NOT NULL,
         avoided_role TEXT DEFAULT 'None',
         wins INTEGER DEFAULT 0,
-        losses INTEGER DEFAULT 0
+        losses INTEGER DEFAULT 0,
+        streak INTEGER DEFAULT 0
     )
     """)
 
@@ -55,6 +56,11 @@ def setup_database():
     cursor.execute("""
     ALTER TABLE players
     ADD COLUMN IF NOT EXISTS losses INTEGER DEFAULT 0
+    """)
+
+    cursor.execute("""
+    ALTER TABLE players
+    ADD COLUMN IF NOT EXISTS streak INTEGER DEFAULT 0
     """)
 
     cursor.execute("""
@@ -108,9 +114,9 @@ def save_player(discord_id, name, rank, rating, primary_role, secondary_role, av
     INSERT INTO players (
         discord_id, name, rank, rating,
         top_rating, jungle_rating, mid_rating, adc_rating, support_rating,
-        primary_role, secondary_role, avoided_role
+        primary_role, secondary_role, avoided_role, streak
     )
-    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0)
     ON CONFLICT(discord_id) DO UPDATE SET
         name = EXCLUDED.name,
         rank = EXCLUDED.rank,
@@ -157,7 +163,8 @@ def row_to_player(row):
         "secondary_role": row[10],
         "avoided_role": row[11] or "None",
         "wins": row[12],
-        "losses": row[13]
+        "losses": row[13],
+        "streak": row[14] if len(row) > 14 and row[14] is not None else 0
     }
 
 
@@ -168,7 +175,7 @@ def get_player(discord_id):
     cursor.execute("""
     SELECT discord_id, name, rank, rating,
            top_rating, jungle_rating, mid_rating, adc_rating, support_rating,
-           primary_role, secondary_role, avoided_role, wins, losses
+           primary_role, secondary_role, avoided_role, wins, losses, streak
     FROM players
     WHERE discord_id = %s
     """, (discord_id,))
@@ -179,7 +186,38 @@ def get_player(discord_id):
     return row_to_player(row)
 
 
-def update_player_after_match(discord_id, assigned_role, rating_change, won):
+def calculate_streak_rating_change(current_streak, won):
+    """
+    Base result is 30 rating.
+    A streak adds +5 rating per extra game on that streak, capped at 50.
+
+    Win examples:
+    current streak 0 or negative -> +30
+    current streak 1 -> +35
+    current streak 2 -> +40
+    current streak 3 -> +45
+    current streak 4+ -> +50
+
+    Loss examples:
+    current streak 0 or positive -> -30
+    current streak -1 -> -35
+    current streak -2 -> -40
+    current streak -3 -> -45
+    current streak -4 or lower -> -50
+    """
+    base_change = 30
+    bonus_per_streak_game = 5
+    max_change = 50
+
+    if won:
+        streak_bonus_steps = current_streak if current_streak > 0 else 0
+        return min(base_change + (streak_bonus_steps * bonus_per_streak_game), max_change)
+
+    streak_bonus_steps = abs(current_streak) if current_streak < 0 else 0
+    return -min(base_change + (streak_bonus_steps * bonus_per_streak_game), max_change)
+
+
+def update_player_after_match(discord_id, assigned_role, rating_change=None, won=False):
     column_map = {
         "Top": "top_rating",
         "Jungle": "jungle_rating",
@@ -193,25 +231,37 @@ def update_player_after_match(discord_id, assigned_role, rating_change, won):
     conn = connect()
     cursor = conn.cursor()
 
+    cursor.execute("SELECT streak FROM players WHERE discord_id = %s", (discord_id,))
+    row = cursor.fetchone()
+    current_streak = row[0] if row and row[0] is not None else 0
+
+    final_rating_change = calculate_streak_rating_change(current_streak, won)
+
     if won:
+        new_streak = current_streak + 1 if current_streak > 0 else 1
         cursor.execute(f"""
         UPDATE players
         SET rating = rating + %s,
             {role_column} = {role_column} + %s,
-            wins = wins + 1
+            wins = wins + 1,
+            streak = %s
         WHERE discord_id = %s
-        """, (rating_change, rating_change, discord_id))
+        """, (final_rating_change, final_rating_change, new_streak, discord_id))
     else:
+        new_streak = current_streak - 1 if current_streak < 0 else -1
         cursor.execute(f"""
         UPDATE players
         SET rating = rating + %s,
             {role_column} = {role_column} + %s,
-            losses = losses + 1
+            losses = losses + 1,
+            streak = %s
         WHERE discord_id = %s
-        """, (rating_change, rating_change, discord_id))
+        """, (final_rating_change, final_rating_change, new_streak, discord_id))
 
     conn.commit()
     conn.close()
+
+    return final_rating_change, new_streak
 
 
 def get_leaderboard(limit=10, offset=0):
@@ -277,6 +327,4 @@ def expected_score(team_rating, opponent_rating):
 
 
 def calculate_elo_change(winner_rating, loser_rating, k=32):
-    expected = expected_score(winner_rating, loser_rating)
-    change = round(k * (1 - expected))
-    return max(5, min(30, change))
+    return 30
