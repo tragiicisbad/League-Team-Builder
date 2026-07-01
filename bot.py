@@ -15,7 +15,8 @@ from database import (
     get_leaderboard,
     save_match,
     get_match_history,
-    calculate_elo_change
+    calculate_elo_change,
+    drop_all_role_ratings_to_nearest_hundred
 )
 
 load_dotenv()
@@ -2190,6 +2191,50 @@ async def resetallratings(ctx):
         ),
         COLOR_SUCCESS
     )
+
+
+@bot.command()
+async def season2ratings(ctx):
+    if not await require_admin(ctx):
+        return
+
+    updated_count = drop_all_role_ratings_to_nearest_hundred()
+
+    synced_count = 0
+
+    conn = connect()
+    cursor = conn.cursor()
+    cursor.execute("SELECT discord_id FROM players")
+    rows = cursor.fetchall()
+    conn.close()
+
+    for (discord_id,) in rows:
+        player = get_player(discord_id)
+        member = ctx.guild.get_member(discord_id) if ctx.guild else None
+
+        if player and member:
+            await sync_member_rank_role(member, player["rating"])
+            synced_count += 1
+
+    player_queue.clear()
+    waitlist_queue.clear()
+    await update_queue_message()
+    await update_winrate_channel(ctx.guild)
+
+    await send_embed(
+        ctx,
+        "Season 2 Ratings Updated",
+        (
+            f"Dropped every player's role ratings down to the nearest hundred.\n"
+            f"Example: **1499 → 1400**.\n\n"
+            f"Updated **{updated_count}** players.\n"
+            f"Synced rank roles for **{synced_count}** players.\n\n"
+            "Overall rating was recalculated from each player's selected primary and secondary roles.\n"
+            "**Wins, losses, and streaks were reset to 0.**"
+        ),
+        COLOR_SUCCESS
+    )
+
 
 
 @bot.command()

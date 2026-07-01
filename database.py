@@ -264,6 +264,71 @@ def update_player_after_match(discord_id, assigned_role, rating_change=None, won
     return final_rating_change, new_streak
 
 
+def drop_all_role_ratings_to_nearest_hundred():
+    """
+    Season reset helper:
+    Drops every role rating down to the nearest hundred.
+    Example: 1499 -> 1400, 1500 -> 1500.
+    Overall rating is recalculated from selected primary/secondary role ratings.
+    Wins, losses, and streaks are reset to 0. Match history is not deleted here.
+    """
+    conn = connect()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        UPDATE players
+        SET top_rating = FLOOR(top_rating / 100.0)::int * 100,
+            jungle_rating = FLOOR(jungle_rating / 100.0)::int * 100,
+            mid_rating = FLOOR(mid_rating / 100.0)::int * 100,
+            adc_rating = FLOOR(adc_rating / 100.0)::int * 100,
+            support_rating = FLOOR(support_rating / 100.0)::int * 100,
+            wins = 0,
+            losses = 0,
+            streak = 0
+    """)
+
+    cursor.execute("""
+        SELECT discord_id, primary_role, secondary_role,
+               top_rating, jungle_rating, mid_rating, adc_rating, support_rating
+        FROM players
+    """)
+
+    players = cursor.fetchall()
+    updated_count = 0
+
+    for row in players:
+        discord_id, primary_role, secondary_role, top, jungle, mid, adc, support = row
+
+        role_ratings = {
+            "Top": top,
+            "Jungle": jungle,
+            "Mid": mid,
+            "ADC": adc,
+            "Support": support
+        }
+
+        def selected_rating(role):
+            if role == "Fill":
+                return round(sum(role_ratings.values()) / len(role_ratings))
+            return role_ratings[role]
+
+        new_overall = round((selected_rating(primary_role) + selected_rating(secondary_role)) / 2)
+
+        cursor.execute("""
+            UPDATE players
+            SET rating = %s
+            WHERE discord_id = %s
+        """, (new_overall, discord_id))
+
+        updated_count += 1
+
+    conn.commit()
+    conn.close()
+
+    return updated_count
+
+
+
 def get_leaderboard(limit=10, offset=0):
     conn = connect()
     cursor = conn.cursor()
