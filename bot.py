@@ -44,6 +44,11 @@ BASE_RATING_CHANGE = 30
 MIN_RATING_CHANGE = 30
 MAX_RATING_CHANGE = 50
 MIN_LEADERBOARD_GAMES = 5
+MAX_LANE_RATING_DIFF = 400
+LANE_OVER_CAP_MULTIPLIER = 35
+LANE_TOTAL_DIFF_MULTIPLIER = 2
+ROLE_PENALTY_MULTIPLIER = 1
+TEAM_RATING_DIFF_MULTIPLIER = 1
 
 ROLES = ["Top", "Jungle", "Mid", "ADC", "Support"]
 
@@ -942,12 +947,14 @@ def build_teams_embed(title="Balanced Teams Generated", description=None):
     rating_diff = abs(blue_total - red_total)
 
     lane_diff = 0
-    for role in ROLES:
-        blue_player = next((p for p in last_blue_team if p["assigned_role"] == role), None)
-        red_player = next((p for p in last_red_team if p["assigned_role"] == role), None)
+    max_lane_diff = 0
+    over_cap_roles = []
 
-        if blue_player and red_player:
-            lane_diff += abs(role_rating(blue_player, role) - role_rating(red_player, role))
+    if last_blue_team and last_red_team:
+        lane_diff, max_lane_diff, over_cap_total, over_cap_roles = lane_balance_stats(
+            last_blue_team,
+            last_red_team
+        )
 
     role_penalty_total = (
         sum(role_penalty(p, p["assigned_role"]) for p in last_blue_team)
@@ -955,7 +962,7 @@ def build_teams_embed(title="Balanced Teams Generated", description=None):
     )
 
     if description is None:
-        description = "Teams were balanced by role fit, lane matchup rating, and total team rating. The top two rated players are forced onto the same role on opposite teams. The active queue is now locked."
+        description = "Teams were balanced by role fit, lane matchup rating, and total team rating. The bot tries to keep every lane within 400 rating while allowing off-role fills when needed. The top two rated players are forced onto the same role on opposite teams. The active queue is now locked."
 
     embed = discord.Embed(
         title=title,
@@ -980,9 +987,11 @@ def build_teams_embed(title="Balanced Teams Generated", description=None):
         value=(
             f"**Team Rating Difference:** {rating_diff}\n"
             f"**Lane Matchup Difference:** {int(lane_diff)}\n"
+            f"**Largest Lane Difference:** {int(max_lane_diff)} / {MAX_LANE_RATING_DIFF}\n"
+            f"**Over-Cap Lanes:** {', '.join(over_cap_roles) if over_cap_roles else 'None'}\n"
             f"**Role Penalty:** {role_penalty_total}\n"
             f"**Top 2 Matchup:** Same role, opposite teams\n"
-            f"**Flexible Carry:** Highest-rated player can be moved off-role more easily\n"
+            f"**Flexible Balancing:** Players can be moved off-role to protect lane balance\n"
             f"**Waitlisted Players:** {len(waitlist_queue)}"
         ),
         inline=False
@@ -1928,12 +1937,13 @@ def role_penalty(player, assigned_role, flexible_player_id=None):
     secondary = player["secondary_role"]
     avoided_role = player.get("avoided_role", "None")
 
+    # Avoided roles are still strongly discouraged.
     if avoided_role == assigned_role:
         return 6000
 
     # The highest-rated player in the lobby is treated as more flexible.
-    # They are still best on their preferred roles, but the bot is more willing
-    # to move them off-role if that creates a better overall team split.
+    # They are still best on preferred roles, but the bot can move them more easily
+    # if that keeps lane matchups fair.
     if flexible_player_id is not None and player["discord_id"] == flexible_player_id:
         if primary == assigned_role:
             return 0
@@ -1944,18 +1954,19 @@ def role_penalty(player, assigned_role, flexible_player_id=None):
         if primary == "Fill" or secondary == "Fill":
             return 0
 
-        return 250
+        return 175
 
     if primary == assigned_role:
         return 0
 
     if secondary == assigned_role:
-        return 100
+        return 75
 
     if primary == "Fill" or secondary == "Fill":
-        return 200
+        return 100
 
-    return 2000
+    # Off-role is now allowed when it helps keep lanes under the rating cap.
+    return 450
 
 
 def best_role_assignment(team, flexible_player_id=None, forced_roles=None):
@@ -1993,6 +2004,38 @@ def best_role_assignment(team, flexible_player_id=None, forced_roles=None):
             best_assignment = assigned
 
     return best_assignment, best_penalty
+
+
+def lane_balance_stats(blue_assigned, red_assigned):
+    lane_diff = 0
+    max_lane_diff = 0
+    over_cap_total = 0
+    over_cap_roles = []
+
+    for role in ROLES:
+        blue_player = next(p for p in blue_assigned if p["assigned_role"] == role)
+        red_player = next(p for p in red_assigned if p["assigned_role"] == role)
+
+        diff = abs(role_rating(blue_player, role) - role_rating(red_player, role))
+
+        lane_diff += diff
+        max_lane_diff = max(max_lane_diff, diff)
+
+        if diff > MAX_LANE_RATING_DIFF:
+            over_by = diff - MAX_LANE_RATING_DIFF
+            over_cap_total += over_by
+            over_cap_roles.append(f"{role}: {diff}")
+
+    return lane_diff, max_lane_diff, over_cap_total, over_cap_roles
+
+
+def matchmaking_score(rating_diff, lane_diff, over_cap_total, role_penalty_total):
+    return (
+        rating_diff * TEAM_RATING_DIFF_MULTIPLIER
+        + lane_diff * LANE_TOTAL_DIFF_MULTIPLIER
+        + over_cap_total * LANE_OVER_CAP_MULTIPLIER
+        + role_penalty_total * ROLE_PENALTY_MULTIPLIER
+    )
 
 
 def find_balanced_teams(players):
@@ -2049,15 +2092,19 @@ def find_balanced_teams(players):
 
         rating_diff = abs(blue_total - red_total)
 
-        lane_diff = 0
-        for role in ROLES:
-            blue_player = next(p for p in blue_assigned if p["assigned_role"] == role)
-            red_player = next(p for p in red_assigned if p["assigned_role"] == role)
-            lane_diff += abs(role_rating(blue_player, role) - role_rating(red_player, role))
+        lane_diff, max_lane_diff, over_cap_total, over_cap_roles = lane_balance_stats(
+            blue_assigned,
+            red_assigned
+        )
 
         total_role_penalty = blue_penalty + red_penalty
 
-        score = rating_diff + lane_diff * 2 + total_role_penalty * 3
+        score = matchmaking_score(
+            rating_diff=rating_diff,
+            lane_diff=lane_diff,
+            over_cap_total=over_cap_total,
+            role_penalty_total=total_role_penalty
+        )
 
         if best_score is None or score < best_score:
             best_score = score
@@ -2144,15 +2191,19 @@ def find_balanced_teams_excluding(players, excluded_signatures):
 
         rating_diff = abs(blue_total - red_total)
 
-        lane_diff = 0
-        for role in ROLES:
-            blue_player = next(p for p in blue_assigned if p["assigned_role"] == role)
-            red_player = next(p for p in red_assigned if p["assigned_role"] == role)
-            lane_diff += abs(role_rating(blue_player, role) - role_rating(red_player, role))
+        lane_diff, max_lane_diff, over_cap_total, over_cap_roles = lane_balance_stats(
+            blue_assigned,
+            red_assigned
+        )
 
         total_role_penalty = blue_penalty + red_penalty
 
-        score = rating_diff + lane_diff * 2 + total_role_penalty * 3
+        score = matchmaking_score(
+            rating_diff=rating_diff,
+            lane_diff=lane_diff,
+            over_cap_total=over_cap_total,
+            role_penalty_total=total_role_penalty
+        )
 
         if best_score is None or score < best_score:
             best_score = score
