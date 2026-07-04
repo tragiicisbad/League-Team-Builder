@@ -44,6 +44,7 @@ BASE_RATING_CHANGE = 30
 MIN_RATING_CHANGE = 30
 MAX_RATING_CHANGE = 50
 MIN_LEADERBOARD_GAMES = 5
+HIGH_RATING_FORCE_FILL_THRESHOLD = 1800
 MAX_LANE_RATING_DIFF = 400
 LANE_OVER_CAP_MULTIPLIER = 35
 LANE_TOTAL_DIFF_MULTIPLIER = 2
@@ -708,11 +709,13 @@ def refresh_player_in_queues(discord_id):
     if not player:
         return
 
+    adjusted_player = apply_high_rating_fill_rule(player)
+
     if discord_id in player_queue:
-        player_queue[discord_id] = player
+        player_queue[discord_id] = adjusted_player
 
     if discord_id in waitlist_queue:
-        waitlist_queue[discord_id] = player
+        waitlist_queue[discord_id] = adjusted_player
 
 
 queue_message_id = None
@@ -780,6 +783,26 @@ def matchmaking_rating(player):
         return calculate_overall_from_selected_roles(player)
     except Exception:
         return player.get("rating", 0)
+
+
+def apply_high_rating_fill_rule(player):
+    """
+    Queue-only rule:
+    If a player's overall rating is 1800+, their secondary queue role is treated as Fill.
+
+    This does not overwrite the saved signup preference in the database.
+    It only changes how they appear in queue and how matchmaking assigns roles.
+    """
+    adjusted_player = player.copy()
+    adjusted_player["role_ratings"] = player["role_ratings"].copy()
+
+    if matchmaking_rating(player) >= HIGH_RATING_FORCE_FILL_THRESHOLD:
+        adjusted_player["secondary_role"] = "Fill"
+        adjusted_player["forced_fill_secondary"] = True
+    else:
+        adjusted_player["forced_fill_secondary"] = False
+
+    return adjusted_player
 
 
 def get_top_two_players(players):
@@ -854,10 +877,14 @@ def clean_player_line(player):
     current_overall = calculate_overall_from_selected_roles(player)
     current_rank = rank_for_rating(current_overall)
 
+    forced_fill_text = ""
+    if player.get("forced_fill_secondary"):
+        forced_fill_text = " • 1800+ Fill"
+
     return (
         f"{rank_emoji(current_rank)} **{player['name']}** — "
         f"{role_emoji(player['primary_role'])}/{role_emoji(player['secondary_role'])} — "
-        f"**{current_overall}**{avoid_text}"
+        f"**{current_overall}**{avoid_text}{forced_fill_text}"
     )
 
 
@@ -871,10 +898,14 @@ def clean_waitlist_line(index, player):
     current_overall = calculate_overall_from_selected_roles(player)
     current_rank = rank_for_rating(current_overall)
 
+    forced_fill_text = ""
+    if player.get("forced_fill_secondary"):
+        forced_fill_text = " • 1800+ Fill"
+
     return (
         f"**#{index}** {rank_emoji(current_rank)} **{player['name']}** — "
         f"{role_emoji(player['primary_role'])}/{role_emoji(player['secondary_role'])} — "
-        f"**{current_overall}**{avoid_text}"
+        f"**{current_overall}**{avoid_text}{forced_fill_text}"
     )
 
 
@@ -992,6 +1023,7 @@ def build_teams_embed(title="Balanced Teams Generated", description=None):
             f"**Role Penalty:** {role_penalty_total}\n"
             f"**Top 2 Matchup:** Same role, opposite teams\n"
             f"**Flexible Balancing:** Players can be moved off-role to protect lane balance\n"
+            f"**1800+ Rule:** Secondary role is treated as Fill\n"
             f"**Waitlisted Players:** {len(waitlist_queue)}"
         ),
         inline=False
@@ -1102,7 +1134,12 @@ def add_to_queue_or_waitlist(user_id, player):
     """
     First 10 players go into the active queue.
     Any player after 10 automatically goes to the waitlist.
+
+    Players with 1800+ overall rating are treated as Fill for their secondary role
+    while they are in queue.
     """
+    player = apply_high_rating_fill_rule(player)
+
     if user_id in player_queue:
         return "active"
 
@@ -1372,7 +1409,7 @@ class SignupView(discord.ui.View):
                 f"Primary: {role_emoji(primary_role)} **{primary_role}**\n"
                 f"Secondary: {role_emoji(secondary_role)} **{secondary_role}**\n"
                 f"Avoid: **{avoid_role_display(avoided_role)}**\n\n"
-                "Ratings are now set by staff using `!edit @player`."
+                "Ratings are now set by staff using `!edit @player`. Players with 1800+ overall rating will have their secondary queue role treated as Fill."
             ),
             ephemeral=True
         )
@@ -1615,7 +1652,7 @@ async def signup(ctx):
         value=(
             "Primary and secondary roles decide what you prefer to queue as.\n"
             "Avoided role tells the bot what to avoid assigning you if possible.\n"
-            "Your ratings are handled by staff, not self-selected."
+            "Your ratings are handled by staff, not self-selected. Players with 1800+ overall rating have their secondary queue role treated as Fill."
         ),
         inline=False
     )
