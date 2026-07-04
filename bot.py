@@ -767,6 +767,73 @@ def role_rating(player, role):
     return player["role_ratings"].get(role, player["rating"])
 
 
+def matchmaking_rating(player):
+    """
+    Uses the player's current overall rating for matchmaking seed strength.
+    """
+    try:
+        return calculate_overall_from_selected_roles(player)
+    except Exception:
+        return player.get("rating", 0)
+
+
+def get_top_two_players(players):
+    """
+    Returns the two highest-rated players in the queue.
+    """
+    sorted_players = sorted(
+        players,
+        key=lambda player: matchmaking_rating(player),
+        reverse=True
+    )
+
+    if len(sorted_players) < 2:
+        return None, None
+
+    return sorted_players[0], sorted_players[1]
+
+
+def shared_top_two_role(highest_player, second_highest_player):
+    """
+    Chooses the role the top two players should directly face each other on.
+
+    Priority:
+    1. A shared preferred role if possible.
+    2. The highest player's primary role.
+    3. Any non-avoided role for both players.
+    4. Top as a final fallback.
+    """
+    if highest_player is None or second_highest_player is None:
+        return None
+
+    preferred_highest = [
+        highest_player.get("primary_role"),
+        highest_player.get("secondary_role")
+    ]
+
+    preferred_second = [
+        second_highest_player.get("primary_role"),
+        second_highest_player.get("secondary_role")
+    ]
+
+    for role in preferred_highest:
+        if role in ROLES and role in preferred_second:
+            return role
+
+    for role in preferred_highest:
+        if role in ROLES:
+            return role
+
+    highest_avoid = highest_player.get("avoided_role", "None")
+    second_avoid = second_highest_player.get("avoided_role", "None")
+
+    for role in ROLES:
+        if role != highest_avoid and role != second_avoid:
+            return role
+
+    return "Top"
+
+
 def clean_player_line(player):
     """
     Compact queue line to prevent Discord embeds from cutting off around 7-8 players.
@@ -888,7 +955,7 @@ def build_teams_embed(title="Balanced Teams Generated", description=None):
     )
 
     if description is None:
-        description = "Teams were balanced by role fit, lane matchup rating, and total team rating. The active queue is now locked."
+        description = "Teams were balanced by role fit, lane matchup rating, and total team rating. The top two rated players are forced onto the same role on opposite teams. The active queue is now locked."
 
     embed = discord.Embed(
         title=title,
@@ -914,6 +981,8 @@ def build_teams_embed(title="Balanced Teams Generated", description=None):
             f"**Team Rating Difference:** {rating_diff}\n"
             f"**Lane Matchup Difference:** {int(lane_diff)}\n"
             f"**Role Penalty:** {role_penalty_total}\n"
+            f"**Top 2 Matchup:** Same role, opposite teams\n"
+            f"**Flexible Carry:** Highest-rated player can be moved off-role more easily\n"
             f"**Waitlisted Players:** {len(waitlist_queue)}"
         ),
         inline=False
@@ -1854,13 +1923,28 @@ def clear_completed_game_players():
         player_queue.pop(discord_id, None)
 
 
-def role_penalty(player, assigned_role):
+def role_penalty(player, assigned_role, flexible_player_id=None):
     primary = player["primary_role"]
     secondary = player["secondary_role"]
     avoided_role = player.get("avoided_role", "None")
 
     if avoided_role == assigned_role:
         return 6000
+
+    # The highest-rated player in the lobby is treated as more flexible.
+    # They are still best on their preferred roles, but the bot is more willing
+    # to move them off-role if that creates a better overall team split.
+    if flexible_player_id is not None and player["discord_id"] == flexible_player_id:
+        if primary == assigned_role:
+            return 0
+
+        if secondary == assigned_role:
+            return 25
+
+        if primary == "Fill" or secondary == "Fill":
+            return 0
+
+        return 250
 
     if primary == assigned_role:
         return 0
@@ -1874,23 +1958,35 @@ def role_penalty(player, assigned_role):
     return 2000
 
 
-def best_role_assignment(team):
+def best_role_assignment(team, flexible_player_id=None, forced_roles=None):
     best_assignment = None
     best_penalty = None
+    forced_roles = forced_roles or {}
 
     for perm in itertools.permutations(team, 5):
         assigned = []
         total_penalty = 0
+        invalid_assignment = False
 
         for index, player in enumerate(perm):
             assigned_role = ROLES[index]
-            penalty = role_penalty(player, assigned_role)
+
+            forced_role = forced_roles.get(player["discord_id"])
+
+            if forced_role is not None and assigned_role != forced_role:
+                invalid_assignment = True
+                break
+
+            penalty = role_penalty(player, assigned_role, flexible_player_id=flexible_player_id)
 
             assigned_player = player.copy()
             assigned_player["assigned_role"] = assigned_role
             assigned.append(assigned_player)
 
             total_penalty += penalty
+
+        if invalid_assignment:
+            continue
 
         if best_penalty is None or total_penalty < best_penalty:
             best_penalty = total_penalty
@@ -1907,11 +2003,46 @@ def find_balanced_teams(players):
     best_lane_diff = None
     best_role_penalty = None
 
+    highest_player, second_highest_player = get_top_two_players(players)
+
+    highest_id = highest_player["discord_id"] if highest_player else None
+    second_highest_id = second_highest_player["discord_id"] if second_highest_player else None
+    top_two_shared_role = shared_top_two_role(highest_player, second_highest_player)
+
+    forced_roles = {}
+
+    if highest_id is not None and second_highest_id is not None and top_two_shared_role is not None:
+        forced_roles = {
+            highest_id: top_two_shared_role,
+            second_highest_id: top_two_shared_role
+        }
+
     for blue_group in itertools.combinations(players, 5):
+        blue_ids = {player["discord_id"] for player in blue_group}
+
+        # Force the two highest-rated players to be on opposite teams.
+        if highest_id is not None and second_highest_id is not None:
+            highest_on_blue = highest_id in blue_ids
+            second_on_blue = second_highest_id in blue_ids
+
+            if highest_on_blue == second_on_blue:
+                continue
+
         red_group = [p for p in players if p not in blue_group]
 
-        blue_assigned, blue_penalty = best_role_assignment(list(blue_group))
-        red_assigned, red_penalty = best_role_assignment(red_group)
+        blue_assigned, blue_penalty = best_role_assignment(
+            list(blue_group),
+            flexible_player_id=highest_id,
+            forced_roles=forced_roles
+        )
+        red_assigned, red_penalty = best_role_assignment(
+            red_group,
+            flexible_player_id=highest_id,
+            forced_roles=forced_roles
+        )
+
+        if blue_assigned is None or red_assigned is None:
+            continue
 
         blue_total = sum(role_rating(p, p["assigned_role"]) for p in blue_assigned)
         red_total = sum(role_rating(p, p["assigned_role"]) for p in red_assigned)
@@ -1962,11 +2093,46 @@ def find_balanced_teams_excluding(players, excluded_signatures):
     best_lane_diff = None
     best_role_penalty = None
 
+    highest_player, second_highest_player = get_top_two_players(players)
+
+    highest_id = highest_player["discord_id"] if highest_player else None
+    second_highest_id = second_highest_player["discord_id"] if second_highest_player else None
+    top_two_shared_role = shared_top_two_role(highest_player, second_highest_player)
+
+    forced_roles = {}
+
+    if highest_id is not None and second_highest_id is not None and top_two_shared_role is not None:
+        forced_roles = {
+            highest_id: top_two_shared_role,
+            second_highest_id: top_two_shared_role
+        }
+
     for blue_group in itertools.combinations(players, 5):
+        blue_ids = {player["discord_id"] for player in blue_group}
+
+        # Force the two highest-rated players to be on opposite teams.
+        if highest_id is not None and second_highest_id is not None:
+            highest_on_blue = highest_id in blue_ids
+            second_on_blue = second_highest_id in blue_ids
+
+            if highest_on_blue == second_on_blue:
+                continue
+
         red_group = [p for p in players if p not in blue_group]
 
-        blue_assigned, blue_penalty = best_role_assignment(list(blue_group))
-        red_assigned, red_penalty = best_role_assignment(red_group)
+        blue_assigned, blue_penalty = best_role_assignment(
+            list(blue_group),
+            flexible_player_id=highest_id,
+            forced_roles=forced_roles
+        )
+        red_assigned, red_penalty = best_role_assignment(
+            red_group,
+            flexible_player_id=highest_id,
+            forced_roles=forced_roles
+        )
+
+        if blue_assigned is None or red_assigned is None:
+            continue
 
         signature = matchup_signature(blue_assigned, red_assigned)
 
