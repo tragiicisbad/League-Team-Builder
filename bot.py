@@ -107,20 +107,6 @@ def streak_display(streak):
     return "—"
 
 
-def format_season_rating_difference(season_rating_change):
-    """
-    Shows actual rating gained/lost from completed games this season.
-    Manual admin rating/rank changes do not affect this number.
-    """
-    season_rating_change = season_rating_change or 0
-
-    if season_rating_change > 0:
-        return f"📈 +{season_rating_change}"
-    if season_rating_change < 0:
-        return f"📉 {season_rating_change}"
-    return "➖ +0"
-
-
 def calculate_streak_rating_change(current_streak, won):
     base_change = 30
     bonus_per_streak_game = 5
@@ -419,6 +405,59 @@ def update_player_role_rating_manual(discord_id, role, rating):
     return rows_changed > 0
 
 
+def rating_select_options():
+    return [
+        discord.SelectOption(
+            label=str(rating),
+            value=str(rating),
+            description=f"Set rating to {rating}"
+        )
+        for rating in range(600, 2601, 100)
+    ]
+
+
+def build_edit_ratings_embed(member, player):
+    current_overall = calculate_overall_from_selected_roles(player)
+    current_rank = rank_for_rating(current_overall)
+
+    embed = discord.Embed(
+        title=f"Edit Ratings — {member.display_name}",
+        description=(
+            "Use the dropdowns below to set each role rating.\n"
+            "Each dropdown updates that role immediately."
+        ),
+        color=COLOR_PROFILE
+    )
+
+    embed.add_field(
+        name="Current Overall",
+        value=f"{rank_emoji(current_rank)} **{current_rank}** — **{current_overall}**",
+        inline=False
+    )
+
+    embed.add_field(
+        name="Role Ratings",
+        value="\n".join(
+            f"{role_emoji(role)} **{role}:** `{player['role_ratings'][role]}`"
+            for role in ROLES
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="Queue Roles",
+        value=(
+            f"Primary: {role_emoji(player['primary_role'])} **{player['primary_role']}**\n"
+            f"Secondary: {role_emoji(player['secondary_role'])} **{player['secondary_role']}**\n"
+            f"Avoid: **{avoid_role_display(player.get('avoided_role', 'None'))}**"
+        ),
+        inline=False
+    )
+
+    embed.set_footer(text="Manual edits affect current rating/rank, but do not change Season Rating gained from games.")
+    return embed
+
+
 def update_player_avoided_role_manual(discord_id, avoided_role):
     conn = connect()
     cursor = conn.cursor()
@@ -484,8 +523,7 @@ def reset_player_ratings_manual(discord_id):
             adc_rating = %s,
             support_rating = %s,
             wins = 0,
-            losses = 0,
-            season_rating_change = 0
+            losses = 0
         WHERE discord_id = %s
     """, (
         base_rating,
@@ -567,8 +605,7 @@ def reset_all_players_ratings_manual():
                 adc_rating = %s,
                 support_rating = %s,
                 wins = 0,
-                losses = 0,
-                season_rating_change = 0
+                losses = 0
             WHERE discord_id = %s
         """, (
             base_rating,
@@ -633,10 +670,9 @@ def rollback_player_match_update(discord_id, assigned_role, role_rating_delta, w
         SET {column} = {column} + %s,
             wins = GREATEST(wins + %s, 0),
             losses = GREATEST(losses + %s, 0),
-            streak = %s,
-            season_rating_change = season_rating_change + %s
+            streak = %s
         WHERE discord_id = %s
-    """, (role_rating_delta, wins_delta, losses_delta, previous_streak, role_rating_delta, discord_id))
+    """, (role_rating_delta, wins_delta, losses_delta, previous_streak, discord_id))
 
     rows_changed = cursor.rowcount
     conn.commit()
@@ -1186,15 +1222,15 @@ class SignupView(discord.ui.View):
 
     async def try_save_signup(self, interaction: discord.Interaction, incomplete_message: str):
         user_id = interaction.user.id
-        data = self.signup_data[user_id]
-        required = ["rank", "rating", "primary_role", "secondary_role"]
+        data = self.signup_data.setdefault(user_id, {})
 
-        if not all(field in data for field in required):
+        if "primary_role" not in data or "secondary_role" not in data:
             await interaction.response.send_message(incomplete_message, ephemeral=True)
             return
 
         primary_role = data["primary_role"]
         secondary_role = data["secondary_role"]
+        avoided_role = data.get("avoided_role", "None")
 
         if primary_role == secondary_role:
             await interaction.response.send_message(
@@ -1203,14 +1239,50 @@ class SignupView(discord.ui.View):
             )
             return
 
+        existing_player = get_player(user_id)
+
+        if existing_player:
+            updated = update_player_role_preferences_manual(
+                discord_id=user_id,
+                primary_role=primary_role,
+                secondary_role=secondary_role,
+                avoided_role=avoided_role
+            )
+
+            if not updated:
+                await interaction.response.send_message(
+                    "Could not update your queue roles. Please try again or ask staff.",
+                    ephemeral=True
+                )
+                return
+
+            new_overall = update_overall_rating_from_selected_roles(user_id)
+            await sync_member_rank_role(interaction.user, new_overall)
+
+            refresh_player_in_queues(user_id)
+            await update_queue_message()
+
+            await interaction.response.send_message(
+                (
+                    "Queue roles updated.\n\n"
+                    f"Primary: {role_emoji(primary_role)} **{primary_role}**\n"
+                    f"Secondary: {role_emoji(secondary_role)} **{secondary_role}**\n"
+                    f"Avoid: **{avoid_role_display(avoided_role)}**\n"
+                    f"Overall Rating: **{new_overall}** "
+                    f"({rank_emoji(rank_for_rating(new_overall))} **{rank_for_rating(new_overall)}**)"
+                ),
+                ephemeral=True
+            )
+            return
+
         save_player(
             discord_id=user_id,
             name=interaction.user.display_name,
-            rank=data["rank"],
-            rating=data["rating"],
+            rank="Iron",
+            rating=RANK_RATINGS["Iron"],
             primary_role=primary_role,
             secondary_role=secondary_role,
-            avoided_role=data.get("avoided_role", "None")
+            avoided_role=avoided_role
         )
 
         new_overall = update_overall_rating_from_selected_roles(user_id)
@@ -1218,35 +1290,17 @@ class SignupView(discord.ui.View):
 
         await interaction.response.send_message(
             (
-                "Signup complete and saved.\n"
-                f"Overall Rating: **{new_overall}** "
-                f"({rank_emoji(rank_for_rating(new_overall))} **{rank_for_rating(new_overall)}**)"
+                "Signup complete. Your queue roles were saved.\n\n"
+                f"Primary: {role_emoji(primary_role)} **{primary_role}**\n"
+                f"Secondary: {role_emoji(secondary_role)} **{secondary_role}**\n"
+                f"Avoid: **{avoid_role_display(avoided_role)}**\n\n"
+                "Ratings are now set by staff using `!edit @player`."
             ),
             ephemeral=True
         )
 
     @discord.ui.select(
-        placeholder="Select your League rank",
-        options=[
-            rank_option(rank)
-            for rank in RANK_RATINGS
-        ]
-    )
-    async def rank_select(self, interaction: discord.Interaction, select: discord.ui.Select):
-        user_id = interaction.user.id
-        self.signup_data.setdefault(user_id, {})
-
-        rank = select.values[0]
-        self.signup_data[user_id]["rank"] = rank
-        self.signup_data[user_id]["rating"] = RANK_RATINGS[rank]
-
-        await interaction.response.send_message(
-            f"Rank saved as **{rank}**. Starting rating: **{RANK_RATINGS[rank]}**.",
-            ephemeral=True
-        )
-
-    @discord.ui.select(
-        placeholder="Select your primary role",
+        placeholder="Select your primary queue role",
         options=[
             role_option("Top", "Primary solo lane"),
             role_option("Jungle", "Primary jungle"),
@@ -1268,13 +1322,13 @@ class SignupView(discord.ui.View):
             )
             return
 
-        await interaction.response.send_message(
-            f"Primary role saved as **{select.values[0]}**.",
-            ephemeral=True
+        await self.try_save_signup(
+            interaction,
+            "Primary role saved. Choose your secondary role to finish signup."
         )
 
     @discord.ui.select(
-        placeholder="Select your secondary role",
+        placeholder="Select your secondary queue role",
         options=[
             role_option("Top", "Secondary solo lane"),
             role_option("Jungle", "Secondary jungle"),
@@ -1298,9 +1352,8 @@ class SignupView(discord.ui.View):
 
         await self.try_save_signup(
             interaction,
-            "Secondary role saved. Make sure you also selected rank and primary role."
+            "Secondary role saved. Choose your primary role to finish signup."
         )
-
 
     @discord.ui.select(
         placeholder="Select a role to avoid",
@@ -1320,7 +1373,7 @@ class SignupView(discord.ui.View):
 
         await self.try_save_signup(
             interaction,
-            "Avoided role saved. Make sure you also selected rank, primary role, and secondary role."
+            "Avoided role saved. Choose your primary and secondary roles to finish signup."
         )
 
 
@@ -1458,34 +1511,37 @@ async def on_ready():
 @bot.hybrid_command(name="signup")
 async def signup(ctx):
     embed = discord.Embed(
-        title="League 5v5 Signup",
+        title="League 5v5 Queue Role Signup",
         description=(
-            "Select your rank, primary role, secondary role, and optional avoided role below.\n\n"
-            "Your choices are saved automatically once your rank, primary role, and secondary role are selected."
+            "Select your primary role, secondary role, and optional avoided role below.\n\n"
+            "Players no longer choose their own rank or rating. Staff will set ratings with `!edit @player`."
         ),
         color=COLOR_SUCCESS
     )
-    embed.add_field(
-        name="Ranks",
-        value="<:iron:1515345800354332783> **Iron** — 800\n<:bronze:1515345342374215821> **Bronze** — 950\n<:silver:1515345381595283559> **Silver** — 1100\n<:gold:1515345215328751657> **Gold** — 1250\n<:platinum:1515345359612674188> **Platinum** — 1400\n<:emerald:1515346336453623859> **Emerald** — 1550\n<:diamond:1515345320169439404> **Diamond** — 1700\n<:master:1515345415594180618> **Master** — 1900\n<:grandmaster:1515345456786571325> **Grandmaster** — 2100\n<:challenger:1515345436527952084> **Challenger** — 2300",
-        inline=True
-    )
+
     embed.add_field(
         name="Roles",
-        value="<:top:1515345567553683589> **Top**\n<:jungle:1515345505142444125> **Jungle**\n<:mid:1515345549086298192> **Mid**\n<:bot:1515345591218208810> **ADC**\n<:support:1515347187473580123> **Support**\n🎲 **Fill**",
+        value=(
+            f"{role_emoji('Top')} **Top**\n"
+            f"{role_emoji('Jungle')} **Jungle**\n"
+            f"{role_emoji('Mid')} **Mid**\n"
+            f"{role_emoji('ADC')} **ADC**\n"
+            f"{role_emoji('Support')} **Support**\n"
+            f"{role_emoji('Fill')} **Fill**"
+        ),
         inline=True
     )
+
     embed.add_field(
-        name="How Ratings Work",
+        name="How It Works",
         value=(
-            "Your main role starts at your rank rating.\n"
-            "Your secondary starts slightly lower.\n"
-            "Off-roles start much lower unless you choose Fill.\n"
-            "Primary and secondary roles cannot be the same.\n"
-            "Avoided roles are heavily penalized during team generation."
+            "Primary and secondary roles decide what you prefer to queue as.\n"
+            "Avoided role tells the bot what to avoid assigning you if possible.\n"
+            "Your ratings are handled by staff, not self-selected."
         ),
         inline=False
     )
+
     if ctx.interaction:
         await ctx.interaction.response.send_message(
             embed=embed,
@@ -1494,8 +1550,7 @@ async def signup(ctx):
         )
     else:
         await ctx.send(
-            "Use the Discord slash command `/signup` from the command popup to open the private signup menu. "
-            "If it does not appear yet, restart the bot once and wait a few seconds."
+            "Use the Discord slash command `/signup` from the command popup to open the private role signup menu."
         )
 
 
@@ -1942,6 +1997,29 @@ def find_balanced_teams_excluding(players, excluded_signatures):
             best_role_penalty = total_role_penalty
 
     return best_blue, best_red, best_rating_diff, best_lane_diff, best_role_penalty
+
+
+
+@bot.command()
+async def edit(ctx, member: discord.Member):
+    if not await require_admin(ctx):
+        return
+
+    player = get_player(member.id)
+
+    if not player:
+        await send_embed(
+            ctx,
+            "Player Not Found",
+            f"{member.display_name} has not signed up yet. They need to use `/signup` first.",
+            COLOR_ERROR
+        )
+        return
+
+    await ctx.send(
+        embed=build_edit_ratings_embed(member, player),
+        view=EditRatingsView(member)
+    )
 
 
 
@@ -2482,6 +2560,70 @@ async def unlockqueue(ctx):
         await send_embed(ctx, "Queue Unlocked", f"The queue is open again. Promoted from waitlist: {promoted_names}", COLOR_SUCCESS)
     else:
         await send_embed(ctx, "Queue Unlocked", "The queue is open again.", COLOR_SUCCESS)
+
+
+
+class EditRatingsView(discord.ui.View):
+    def __init__(self, target_member):
+        super().__init__(timeout=300)
+        self.target_member = target_member
+
+    async def set_role_rating(self, interaction: discord.Interaction, role: str, rating: int):
+        if not is_admin_member(interaction.user):
+            await interaction.response.send_message(
+                "Only staff can edit player ratings.",
+                ephemeral=True
+            )
+            return
+
+        player = get_player(self.target_member.id)
+
+        if not player:
+            await interaction.response.send_message(
+                "That player is not in the database yet. Have them use `/signup` first.",
+                ephemeral=True
+            )
+            return
+
+        updated = update_player_role_rating_manual(self.target_member.id, role, rating)
+
+        if not updated:
+            await interaction.response.send_message(
+                f"Could not update {self.target_member.display_name}'s {role} rating.",
+                ephemeral=True
+            )
+            return
+
+        new_overall = update_overall_rating_from_selected_roles(self.target_member.id)
+        await sync_member_rank_role(self.target_member, new_overall)
+
+        refresh_player_in_queues(self.target_member.id)
+        await update_queue_message()
+
+        updated_player = get_player(self.target_member.id)
+        embed = build_edit_ratings_embed(self.target_member, updated_player)
+
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.select(placeholder="Set Top rating", options=rating_select_options())
+    async def top_rating_select(self, interaction: discord.Interaction, select: discord.ui.Select):
+        await self.set_role_rating(interaction, "Top", int(select.values[0]))
+
+    @discord.ui.select(placeholder="Set Jungle rating", options=rating_select_options())
+    async def jungle_rating_select(self, interaction: discord.Interaction, select: discord.ui.Select):
+        await self.set_role_rating(interaction, "Jungle", int(select.values[0]))
+
+    @discord.ui.select(placeholder="Set Mid rating", options=rating_select_options())
+    async def mid_rating_select(self, interaction: discord.Interaction, select: discord.ui.Select):
+        await self.set_role_rating(interaction, "Mid", int(select.values[0]))
+
+    @discord.ui.select(placeholder="Set ADC rating", options=rating_select_options())
+    async def adc_rating_select(self, interaction: discord.Interaction, select: discord.ui.Select):
+        await self.set_role_rating(interaction, "ADC", int(select.values[0]))
+
+    @discord.ui.select(placeholder="Set Support rating", options=rating_select_options())
+    async def support_rating_select(self, interaction: discord.Interaction, select: discord.ui.Select):
+        await self.set_role_rating(interaction, "Support", int(select.values[0]))
 
 
 
@@ -3333,7 +3475,7 @@ def get_winrate_page(limit=10, offset=0):
     cursor = conn.cursor()
 
     cursor.execute("""
-        SELECT name, rank, rating, primary_role, secondary_role, wins, losses, season_rating_change
+        SELECT name, rank, rating, primary_role, secondary_role, wins, losses
         FROM players
         WHERE (wins + losses) >= %s
         ORDER BY
@@ -3361,7 +3503,7 @@ def format_winrate_medal(position):
 
 def add_winrate_rows_to_embed(embed, rows, offset):
     for index, row in enumerate(rows, start=offset + 1):
-        name, stored_rank, rating, primary_role, secondary_role, wins, losses, season_rating_change = row
+        name, stored_rank, rating, primary_role, secondary_role, wins, losses = row
         games_played = wins + losses
         winrate_percent = round((wins / games_played) * 100, 1)
 
@@ -3372,10 +3514,8 @@ def add_winrate_rows_to_embed(embed, rows, offset):
             name=f"{medal} {rank_emoji(current_rank)} {name}",
             value=(
                 f"`{winrate_percent}% WR`  •  `{wins}W - {losses}L`  •  `{games_played} GP`\n"
-                f"{format_season_rating_difference(season_rating_change)} Season Rating\n"
                 f"{role_emoji(primary_role)} {primary_role} / "
-                f"{role_emoji(secondary_role)} {secondary_role}  •  "
-                f"{rank_emoji(current_rank)} `{rating}`"
+                f"{role_emoji(secondary_role)} {secondary_role}  •  `{rating}` rating"
             ),
             inline=False
         )
@@ -3395,7 +3535,7 @@ def build_winrate_embed(page=1, compact_top_10=False, auto_page=None):
 
     if compact_top_10:
         title = f"🏆 Top Winrates — Page {page}/3"
-        description = f"Auto-updated after each result. Minimum **{MIN_WINRATE_GAMES} games played** required. Season Rating shows actual rating gained/lost from recorded games."
+        description = f"Auto-updated after each result. Minimum **{MIN_WINRATE_GAMES} games played** required."
     else:
         title = f"🏆 Winrate Leaderboard — Page {page}"
         description = f"Only players with at least **{MIN_WINRATE_GAMES} games played** are shown."
