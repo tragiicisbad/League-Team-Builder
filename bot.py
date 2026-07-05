@@ -827,7 +827,8 @@ def shared_top_two_role(highest_player, second_highest_player):
 
     Priority:
     1. A shared preferred role if possible.
-    2. The highest player's primary role.
+    2. The second-highest player's preferred role, so the highest-rated player is
+       the one more likely to be filled into that matchup.
     3. Any non-avoided role for both players.
     4. Top as a final fallback.
     """
@@ -848,7 +849,10 @@ def shared_top_two_role(highest_player, second_highest_player):
         if role in ROLES and role in preferred_second:
             return role
 
-    for role in preferred_highest:
+    # If there is no shared preferred role, use the second-highest player's
+    # preferred role. This makes the highest-rated player fill into the direct
+    # matchup instead of forcing the second-highest off-role.
+    for role in preferred_second:
         if role in ROLES:
             return role
 
