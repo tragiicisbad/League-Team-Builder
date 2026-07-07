@@ -55,7 +55,8 @@ WINRATE_CHANNEL_NAME = "winrates"
 BETTING_WINDOW_SECONDS = 180
 MIN_BET_AMOUNT = 1000
 TRIGGER_GIFS = {
-    "good bot": "https://klipy.com/gifs/good-boy-good-boi"
+    "good bot": "https://klipy.com/gifs/good-boy-good-boi",
+    "bot dont lie": "https://tenor.com/view/patrick-patrick-star-jolly-happy-rainbow-and-sunshine-gif-11154688262827409004"
 }
 RANK_ROLE_NAMES = [
     "Iron", "Bronze", "Silver", "Gold", "Platinum", "Emerald", "Diamond",
