@@ -26,7 +26,6 @@ from database import (
     award_match_coin_rewards,
     get_coin_leaderboard,
     create_betting_match,
-    set_betting_message,
     get_betting_match,
     close_betting_match,
     place_or_update_bet,
@@ -52,7 +51,6 @@ STAFF_ROLE_NAMES = ["Customs Admin", "Moderator"]
 PROMOTION_CHANNEL_NAME = "general"
 MATCH_HISTORY_CHANNEL_NAME = "match-history"
 WINRATE_CHANNEL_NAME = "winrates"
-BETTING_CHANNEL_NAME = "betting"
 BETTING_WINDOW_SECONDS = 180
 MIN_BET_AMOUNT = 1000
 RANK_ROLE_NAMES = [
@@ -748,6 +746,8 @@ last_blue_team = []
 last_red_team = []
 last_teams_message_id = None
 last_teams_channel_id = None
+last_teams_embed_title = "Balanced Teams Generated"
+last_teams_embed_description = None
 last_match_history_message_id = None
 last_match_history_channel_id = None
 generated_team_signatures = set()
@@ -1054,7 +1054,35 @@ def build_teams_embed(title="Balanced Teams Generated", description=None):
         inline=False
     )
 
-    embed.set_footer(text="Use !swap @player1 @player2 to adjust teams. Result buttons are posted in #match-history.")
+    betting_id = globals().get("active_betting_id")
+
+    if betting_id is not None:
+        betting_match = get_betting_match(betting_id)
+
+        if betting_match:
+            status = betting_match["status"]
+            status_text = {
+                "open": f"Open - closes {betting_closes_timestamp(betting_match['closes_at'])}",
+                "closed": "Closed - waiting for result",
+                "settled": f"Settled - {str(betting_match.get('winner', '')).capitalize()} won",
+                "refunded": "Refunded"
+            }.get(status, status.title())
+
+            total_pool = betting_match["blue_pool"] + betting_match["red_pool"]
+
+            embed.add_field(
+                name=f"Betting #{betting_match['id']}",
+                value=(
+                    f"**Status:** {status_text}\n"
+                    f"**Blue Pool:** {format_coins(betting_match['blue_pool'])} coins\n"
+                    f"**Red Pool:** {format_coins(betting_match['red_pool'])} coins\n"
+                    f"**Total Pot:** {format_coins(total_pool)} coins\n"
+                    f"**Minimum Bet:** {format_coins(MIN_BET_AMOUNT)} coins"
+                ),
+                inline=False
+            )
+
+    embed.set_footer(text="Use !swap @player1 @player2 to adjust teams. Bet with the buttons below. Result buttons are posted in #match-history.")
     return embed
 
 
@@ -1375,13 +1403,6 @@ def betting_team_ids(betting_match, side):
     return {int(player["discord_id"]) for player in team}
 
 
-def get_betting_channel(guild):
-    if guild is None:
-        return None
-
-    return discord.utils.get(guild.text_channels, name=BETTING_CHANNEL_NAME)
-
-
 def betting_closes_timestamp(closes_at_text):
     try:
         dt = datetime.fromisoformat(closes_at_text)
@@ -1389,62 +1410,6 @@ def betting_closes_timestamp(closes_at_text):
         return "soon"
 
     return f"<t:{int(dt.timestamp())}:R>"
-
-
-def build_betting_embed(betting_match):
-    status = betting_match["status"]
-    color = COLOR_SUCCESS if status == "open" else COLOR_WARNING
-
-    status_text = {
-        "open": f"🟢 Betting Open — closes {betting_closes_timestamp(betting_match['closes_at'])}",
-        "closed": "🔒 Betting Closed — waiting for result",
-        "settled": f"✅ Settled — {str(betting_match.get('winner', '')).capitalize()} won",
-        "refunded": "↩️ Refunded"
-    }.get(status, status.title())
-
-    embed = discord.Embed(
-        title=f"🎰 Match Betting #{betting_match['id']}",
-        description=(
-            f"{status_text}\n\n"
-            "Players in the game may only bet on their own team. Spectators may bet either side.\n"
-            "No max bet. Coins are reserved immediately when you place a bet."
-        ),
-        color=color
-    )
-
-    blue_lines = [
-        f"{role_emoji(player['assigned_role'])} **{player['assigned_role']}** — {player['name']}"
-        for player in betting_match["blue_team"]
-    ]
-
-    red_lines = [
-        f"{role_emoji(player['assigned_role'])} **{player['assigned_role']}** — {player['name']}"
-        for player in betting_match["red_team"]
-    ]
-
-    embed.add_field(
-        name=f"🔵 Blue Pool — {format_coins(betting_match['blue_pool'])}",
-        value="\n".join(blue_lines),
-        inline=True
-    )
-
-    embed.add_field(
-        name=f"🔴 Red Pool — {format_coins(betting_match['red_pool'])}",
-        value="\n".join(red_lines),
-        inline=True
-    )
-
-    total_pool = betting_match["blue_pool"] + betting_match["red_pool"]
-
-    embed.add_field(
-        name="Pot",
-        value=f"**Total:** {format_coins(total_pool)} coins\n**Minimum Bet:** {format_coins(MIN_BET_AMOUNT)} coins",
-        inline=False
-    )
-
-    embed.set_footer(text="Betting closes automatically. Shuffle/cancel refunds all open bets.")
-
-    return embed
 
 
 async def update_betting_message(betting_id):
@@ -1467,7 +1432,13 @@ async def update_betting_message(betting_id):
     try:
         msg = await channel.fetch_message(message_id)
         view = BettingView(betting_id) if betting_match["status"] == "open" else None
-        await msg.edit(embed=build_betting_embed(betting_match), view=view)
+        await msg.edit(
+            embed=build_teams_embed(
+                title=last_teams_embed_title,
+                description=last_teams_embed_description
+            ),
+            view=view
+        )
         return True
     except Exception as e:
         print(f"Could not update betting message: {e}")
@@ -1486,16 +1457,14 @@ async def close_betting_after_delay(betting_id, delay_seconds):
     await update_betting_message(betting_id)
 
 
-async def open_betting_for_current_match(guild):
+async def open_betting_for_current_match(guild=None):
     global active_betting_id
 
     if not last_blue_team or not last_red_team:
         return None
 
-    channel = get_betting_channel(guild)
-
-    if channel is None:
-        print(f"Could not find #{BETTING_CHANNEL_NAME} channel.")
+    if last_teams_channel_id is None or last_teams_message_id is None:
+        print("Could not open betting: teams message has not been posted yet.")
         return None
 
     closes_at = (datetime.now() + timedelta(seconds=BETTING_WINDOW_SECONDS)).isoformat(timespec="seconds")
@@ -1504,19 +1473,13 @@ async def open_betting_for_current_match(guild):
         blue_team=betting_team_payload(last_blue_team),
         red_team=betting_team_payload(last_red_team),
         closes_at=closes_at,
-        channel_id=channel.id,
-        message_id=None
+        channel_id=last_teams_channel_id,
+        message_id=last_teams_message_id
     )
 
     active_betting_id = betting_id
 
-    betting_match = get_betting_match(betting_id)
-    msg = await channel.send(
-        embed=build_betting_embed(betting_match),
-        view=BettingView(betting_id)
-    )
-
-    set_betting_message(betting_id, channel.id, msg.id)
+    await update_betting_message(betting_id)
 
     bot.loop.create_task(close_betting_after_delay(betting_id, BETTING_WINDOW_SECONDS))
 
@@ -3300,6 +3263,7 @@ class ResultView(discord.ui.View):
 @bot.command()
 async def teams(ctx):
     global last_blue_team, last_red_team, queue_locked, last_teams_message_id, last_teams_channel_id, generated_team_signatures
+    global last_teams_embed_title, last_teams_embed_description
 
     if len(player_queue) < MAX_QUEUE_SIZE:
         await send_embed(
@@ -3319,7 +3283,12 @@ async def teams(ctx):
     queue_locked = True
     await update_queue_message()
 
-    embed = build_teams_embed()
+    last_teams_embed_title = "Balanced Teams Generated"
+    last_teams_embed_description = None
+    embed = build_teams_embed(
+        title=last_teams_embed_title,
+        description=last_teams_embed_description
+    )
 
     msg = await ctx.send(embed=embed)
     last_teams_message_id = msg.id
@@ -3332,6 +3301,7 @@ async def teams(ctx):
 @bot.command()
 async def shuffle(ctx):
     global last_blue_team, last_red_team, generated_team_signatures
+    global last_teams_embed_title, last_teams_embed_description
 
     if not await require_admin(ctx):
         return
@@ -3346,8 +3316,6 @@ async def shuffle(ctx):
         return
 
     players = last_blue_team + last_red_team
-
-    await refund_active_betting("Teams were shuffled.")
 
     if not generated_team_signatures:
         generated_team_signatures = {matchup_signature(last_blue_team, last_red_team)}
@@ -3366,18 +3334,22 @@ async def shuffle(ctx):
         )
         return
 
+    await refund_active_betting("Teams were shuffled.")
+
     old_signature_count = len(generated_team_signatures)
 
     last_blue_team = best_blue
     last_red_team = best_red
     generated_team_signatures.add(matchup_signature(last_blue_team, last_red_team))
 
+    last_teams_embed_title = "Teams Shuffled"
+    last_teams_embed_description = (
+        "Teams were remade using the same 10 players, while avoiding the previous proposed team split.\n"
+        f"Unique team split #{old_signature_count + 1} for this match."
+    )
     embed = build_teams_embed(
-        title="Teams Shuffled",
-        description=(
-            "Teams were remade using the same 10 players, while avoiding the previous proposed team split.\n"
-            f"Unique team split #{old_signature_count + 1} for this match."
-        )
+        title=last_teams_embed_title,
+        description=last_teams_embed_description
     )
 
     updated_main = await update_teams_message(embed)
@@ -3397,7 +3369,7 @@ async def shuffle(ctx):
     await send_embed(
         ctx,
         "Teams Shuffled",
-        "Generated a new unique team split. The teams message, #match-history message, and betting post were updated.",
+        "Generated a new unique team split. The teams message, betting buttons, and #match-history message were updated.",
         COLOR_SUCCESS
     )
 
@@ -3405,6 +3377,9 @@ async def shuffle(ctx):
 
 @bot.command()
 async def swap(ctx, player_one_arg: str, player_two_arg: str):
+    global last_teams_message_id, last_teams_channel_id
+    global last_teams_embed_title, last_teams_embed_description
+
     if not await require_admin(ctx):
         return
 
@@ -3434,6 +3409,8 @@ async def swap(ctx, player_one_arg: str, player_two_arg: str):
 
     player_one_old_role = player_one["assigned_role"]
     player_two_old_role = player_two["assigned_role"]
+
+    await refund_active_betting("Teams were adjusted.")
 
     if team_one_name == team_two_name:
         # Same team swap: players keep their team, but trade roles.
@@ -3465,9 +3442,11 @@ async def swap(ctx, player_one_arg: str, player_two_arg: str):
             f"as {role_emoji(player_one_old_role)} **{player_one_old_role}**."
         )
 
+    last_teams_embed_title = "Teams Updated"
+    last_teams_embed_description = swap_description
     embed = build_teams_embed(
-        title="Teams Updated",
-        description=swap_description
+        title=last_teams_embed_title,
+        description=last_teams_embed_description
     )
 
     updated = await update_teams_message(embed)
@@ -3475,7 +3454,11 @@ async def swap(ctx, player_one_arg: str, player_two_arg: str):
     if updated:
         await ctx.message.add_reaction("✅")
     else:
-        await ctx.send(embed=embed)
+        msg = await ctx.send(embed=embed)
+        last_teams_message_id = msg.id
+        last_teams_channel_id = ctx.channel.id
+
+    await open_betting_for_current_match(ctx.guild)
 
 def format_result_change_lines(player_changes, sign):
     lines = []
@@ -3802,6 +3785,7 @@ async def rollback(ctx):
     global queue_locked, last_blue_team, last_red_team, last_teams_message_id, last_teams_channel_id
     global last_match_history_message_id, last_match_history_channel_id, generated_team_signatures
     global player_queue, waitlist_queue, last_result_rollback, active_betting_id
+    global last_teams_embed_title, last_teams_embed_description
 
     if not await require_admin(ctx):
         return
@@ -3865,9 +3849,11 @@ async def rollback(ctx):
     await create_queue_message(old_queue_channel, replace_existing=False)
     await update_queue_message()
 
+    last_teams_embed_title = "Result Rolled Back"
+    last_teams_embed_description = "The previous result was undone. Admins can now select the correct winner."
     main_embed = build_teams_embed(
-        title="Result Rolled Back",
-        description="The previous result was undone. Admins can now select the correct winner."
+        title=last_teams_embed_title,
+        description=last_teams_embed_description
     )
 
     await update_teams_message(main_embed)
