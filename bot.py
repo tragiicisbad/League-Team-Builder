@@ -696,9 +696,10 @@ def rollback_player_match_update(discord_id, assigned_role, role_rating_delta, w
         SET {column} = {column} + %s,
             wins = GREATEST(wins + %s, 0),
             losses = GREATEST(losses + %s, 0),
-            streak = %s
+            streak = %s,
+            season_rating_change = season_rating_change + %s
         WHERE discord_id = %s
-    """, (role_rating_delta, wins_delta, losses_delta, previous_streak, discord_id))
+    """, (role_rating_delta, wins_delta, losses_delta, previous_streak, role_rating_delta, discord_id))
 
     rows_changed = cursor.rowcount
     conn.commit()
@@ -4020,7 +4021,7 @@ def get_winrate_page(limit=10, offset=0):
     cursor = conn.cursor()
 
     cursor.execute("""
-        SELECT name, rank, rating, primary_role, secondary_role, wins, losses
+        SELECT name, rank, rating, primary_role, secondary_role, wins, losses, season_rating_change
         FROM players
         WHERE (wins + losses) >= %s
         ORDER BY
@@ -4046,9 +4047,15 @@ def format_winrate_medal(position):
     return f"`#{position}`"
 
 
+def format_season_rating_change(change):
+    if change > 0:
+        return f"+{change}"
+    return str(change)
+
+
 def add_winrate_rows_to_embed(embed, rows, offset):
     for index, row in enumerate(rows, start=offset + 1):
-        name, stored_rank, rating, primary_role, secondary_role, wins, losses = row
+        name, stored_rank, rating, primary_role, secondary_role, wins, losses, season_rating_change = row
         games_played = wins + losses
         winrate_percent = round((wins / games_played) * 100, 1)
 
@@ -4061,6 +4068,7 @@ def add_winrate_rows_to_embed(embed, rows, offset):
                 f"`{winrate_percent}% WR`  •  `{wins}W - {losses}L`  •  `{games_played} GP`\n"
                 f"{role_emoji(primary_role)} {primary_role} / "
                 f"{role_emoji(secondary_role)} {secondary_role}  •  `{rating}` rating"
+                f"  •  `{format_season_rating_change(season_rating_change)}` season"
             ),
             inline=False
         )
