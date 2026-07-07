@@ -54,6 +54,9 @@ MATCH_HISTORY_CHANNEL_NAME = "match-history"
 WINRATE_CHANNEL_NAME = "winrates"
 BETTING_WINDOW_SECONDS = 180
 MIN_BET_AMOUNT = 1000
+TRIGGER_GIFS = {
+    "good bot": "https://klipy.com/gifs/good-boy-good-boi"
+}
 RANK_ROLE_NAMES = [
     "Iron", "Bronze", "Silver", "Gold", "Platinum", "Emerald", "Diamond",
     "Master", "Grandmaster", "Challenger"
@@ -1988,6 +1991,21 @@ async def on_ready():
         print(f"Could not sync slash commands: {e}")
 
     print(f"Logged in as {bot.user}")
+
+
+@bot.event
+async def on_message(message):
+    if message.author == bot.user:
+        return
+
+    lowered_content = message.content.lower()
+
+    for trigger, gif_url in TRIGGER_GIFS.items():
+        if trigger in lowered_content:
+            await message.channel.send(gif_url)
+            break
+
+    await bot.process_commands(message)
 
 
 @bot.hybrid_command(name="signup")
