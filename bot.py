@@ -724,6 +724,60 @@ def remove_player_from_database(discord_id):
     return rows_deleted > 0
 
 
+def find_player_for_removal(raw_target):
+    """
+    Finds a saved player by mention, Discord ID, or exact saved database name.
+    This helps remove players who are no longer resolvable as Discord members.
+    """
+    target = str(raw_target).strip()
+    cleaned_id = target.replace("<@", "").replace(">", "").replace("!", "")
+
+    try:
+        discord_id = int(cleaned_id)
+        return get_player(discord_id)
+    except ValueError:
+        pass
+
+    conn = connect()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT discord_id, name, rank, rating,
+               top_rating, jungle_rating, mid_rating, adc_rating, support_rating,
+               primary_role, secondary_role, avoided_role, wins, losses, streak, season_rating_change, coins
+        FROM players
+        WHERE LOWER(name) = LOWER(%s)
+    """, (target,))
+
+    row = cursor.fetchone()
+    conn.close()
+
+    if not row:
+        return None
+
+    return {
+        "discord_id": row[0],
+        "name": row[1],
+        "rank": row[2],
+        "rating": row[3],
+        "role_ratings": {
+            "Top": row[4],
+            "Jungle": row[5],
+            "Mid": row[6],
+            "ADC": row[7],
+            "Support": row[8]
+        },
+        "primary_role": row[9],
+        "secondary_role": row[10],
+        "avoided_role": row[11] or "None",
+        "wins": row[12],
+        "losses": row[13],
+        "streak": row[14] if row[14] is not None else 0,
+        "season_rating_change": row[15] if row[15] is not None else 0,
+        "coins": row[16] if row[16] is not None else 0
+    }
+
+
 def refresh_player_in_queues(discord_id):
     """
     Replaces any queued copy of a player after their saved profile changes.
@@ -2939,34 +2993,37 @@ async def syncrankroles(ctx):
 
 
 @bot.command()
-async def removeplayer(ctx, member: discord.Member):
+async def removeplayer(ctx, *, target: str):
     if not await require_admin(ctx):
         return
 
-    player = get_player(member.id)
+    player = find_player_for_removal(target)
 
     if not player:
         await send_embed(
             ctx,
             "Player Not Found",
-            f"{member.display_name} is not currently in the database.",
+            f"No saved player found for `{target}`. Use a mention, Discord ID, or exact saved player name.",
             COLOR_ERROR
         )
         return
 
-    removed = remove_player_from_database(member.id)
+    discord_id = player["discord_id"]
+    display_name = player["name"]
+
+    removed = remove_player_from_database(discord_id)
 
     if not removed:
         await send_embed(
             ctx,
             "Remove Failed",
-            f"Could not remove **{member.display_name}** from the database.",
+            f"Could not remove **{display_name}** from the database.",
             COLOR_ERROR
         )
         return
 
-    player_queue.pop(member.id, None)
-    waitlist_queue.pop(member.id, None)
+    player_queue.pop(discord_id, None)
+    waitlist_queue.pop(discord_id, None)
     await update_queue_message()
     await update_winrate_channel(ctx.guild)
 
@@ -2974,7 +3031,7 @@ async def removeplayer(ctx, member: discord.Member):
         ctx,
         "Player Removed",
         (
-            f"Removed **{member.display_name}** from the database.\n"
+            f"Removed **{display_name}** from the database.\n"
             "They will need to use `/signup` again if they want to play."
         ),
         COLOR_SUCCESS
