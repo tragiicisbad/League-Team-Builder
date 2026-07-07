@@ -40,7 +40,8 @@ def setup_database():
         wins INTEGER DEFAULT 0,
         losses INTEGER DEFAULT 0,
         streak INTEGER DEFAULT 0,
-        season_rating_change INTEGER DEFAULT 0
+        season_rating_change INTEGER DEFAULT 0,
+        coins BIGINT DEFAULT 0
     )
     """)
 
@@ -67,6 +68,11 @@ def setup_database():
     cursor.execute("""
     ALTER TABLE players
     ADD COLUMN IF NOT EXISTS season_rating_change INTEGER DEFAULT 0
+    """)
+
+    cursor.execute("""
+    ALTER TABLE players
+    ADD COLUMN IF NOT EXISTS coins BIGINT DEFAULT 0
     """)
 
     cursor.execute("""
@@ -102,7 +108,8 @@ def setup_database():
         wins INTEGER DEFAULT 0,
         losses INTEGER DEFAULT 0,
         streak INTEGER DEFAULT 0,
-        season_rating_change INTEGER DEFAULT 0
+        season_rating_change INTEGER DEFAULT 0,
+        coins BIGINT DEFAULT 0
     )
     """)
 
@@ -119,6 +126,45 @@ def setup_database():
         blue_rating INTEGER NOT NULL,
         red_rating INTEGER NOT NULL,
         rating_change INTEGER NOT NULL
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS betting_matches (
+        id SERIAL PRIMARY KEY,
+        created_at TEXT NOT NULL,
+        closes_at TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'open',
+        blue_team TEXT NOT NULL,
+        red_team TEXT NOT NULL,
+        blue_pool BIGINT DEFAULT 0,
+        red_pool BIGINT DEFAULT 0,
+        winner TEXT,
+        message_id BIGINT,
+        channel_id BIGINT
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS bets (
+        id SERIAL PRIMARY KEY,
+        betting_match_id INTEGER NOT NULL REFERENCES betting_matches(id) ON DELETE CASCADE,
+        discord_id BIGINT NOT NULL,
+        side TEXT NOT NULL,
+        amount BIGINT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE(betting_match_id, discord_id)
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS betting_payouts (
+        id SERIAL PRIMARY KEY,
+        betting_match_id INTEGER NOT NULL REFERENCES betting_matches(id) ON DELETE CASCADE,
+        discord_id BIGINT NOT NULL,
+        amount BIGINT NOT NULL,
+        reason TEXT NOT NULL,
+        created_at TEXT NOT NULL
     )
     """)
 
@@ -211,7 +257,8 @@ def row_to_player(row):
         "wins": row[12],
         "losses": row[13],
         "streak": row[14] if len(row) > 14 and row[14] is not None else 0,
-        "season_rating_change": row[15] if len(row) > 15 and row[15] is not None else 0
+        "season_rating_change": row[15] if len(row) > 15 and row[15] is not None else 0,
+        "coins": row[16] if len(row) > 16 and row[16] is not None else 0
     }
 
 
@@ -222,7 +269,7 @@ def get_player(discord_id):
     cursor.execute("""
     SELECT discord_id, name, rank, rating,
            top_rating, jungle_rating, mid_rating, adc_rating, support_rating,
-           primary_role, secondary_role, avoided_role, wins, losses, streak, season_rating_change
+           primary_role, secondary_role, avoided_role, wins, losses, streak, season_rating_change, coins
     FROM players
     WHERE discord_id = %s
     """, (discord_id,))
@@ -402,14 +449,14 @@ def full_season_rollover(season_name="Season 1"):
             discord_id, name, rank, rating,
             top_rating, jungle_rating, mid_rating, adc_rating, support_rating,
             primary_role, secondary_role, avoided_role,
-            wins, losses, streak, season_rating_change
+            wins, losses, streak, season_rating_change, coins
         )
         SELECT
             %s, %s,
             discord_id, name, rank, rating,
             top_rating, jungle_rating, mid_rating, adc_rating, support_rating,
             primary_role, secondary_role, avoided_role,
-            wins, losses, streak, season_rating_change
+            wins, losses, streak, season_rating_change, coins
         FROM players
     """, (season_name, archived_at))
 
@@ -493,6 +540,570 @@ def full_season_rollover(season_name="Season 1"):
         "updated_players": updated_players,
         "deleted_matches": deleted_matches
     }
+
+
+
+def get_all_player_ids():
+    conn = connect()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT discord_id FROM players")
+    rows = cursor.fetchall()
+
+    conn.close()
+
+    return [row[0] for row in rows]
+
+
+def get_player_coin_balance(discord_id):
+    conn = connect()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT coins FROM players WHERE discord_id = %s", (discord_id,))
+    row = cursor.fetchone()
+
+    conn.close()
+
+    if not row:
+        return None
+
+    return row[0] or 0
+
+
+def add_coins(discord_id, amount):
+    conn = connect()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        UPDATE players
+        SET coins = GREATEST(coins + %s, 0)
+        WHERE discord_id = %s
+    """, (amount, discord_id))
+
+    rows_changed = cursor.rowcount
+    conn.commit()
+    conn.close()
+
+    return rows_changed > 0
+
+
+def award_match_coin_rewards(played_ids, signed_reward=5000, played_reward=30000):
+    played_ids = set(int(player_id) for player_id in played_ids)
+
+    conn = connect()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT discord_id FROM players")
+    player_rows = cursor.fetchall()
+
+    rewards = []
+
+    for (discord_id,) in player_rows:
+        reward = played_reward if int(discord_id) in played_ids else signed_reward
+
+        cursor.execute("""
+            UPDATE players
+            SET coins = coins + %s
+            WHERE discord_id = %s
+        """, (reward, discord_id))
+
+        rewards.append((discord_id, reward))
+
+    conn.commit()
+    conn.close()
+
+    return rewards
+
+
+def get_coin_leaderboard(limit=10, offset=0):
+    conn = connect()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT name, coins
+        FROM players
+        ORDER BY coins DESC, name ASC
+        LIMIT %s OFFSET %s
+    """, (limit, offset))
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    return rows
+
+
+def create_betting_match(blue_team, red_team, closes_at, channel_id=None, message_id=None):
+    conn = connect()
+    cursor = conn.cursor()
+
+    now_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    cursor.execute("""
+        INSERT INTO betting_matches (
+            created_at, closes_at, status,
+            blue_team, red_team,
+            blue_pool, red_pool,
+            channel_id, message_id
+        )
+        VALUES (%s, %s, 'open', %s, %s, 0, 0, %s, %s)
+        RETURNING id
+    """, (
+        now_text,
+        closes_at,
+        json.dumps(blue_team),
+        json.dumps(red_team),
+        channel_id,
+        message_id
+    ))
+
+    betting_id = cursor.fetchone()[0]
+    conn.commit()
+    conn.close()
+
+    return betting_id
+
+
+def set_betting_message(betting_match_id, channel_id, message_id):
+    conn = connect()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        UPDATE betting_matches
+        SET channel_id = %s,
+            message_id = %s
+        WHERE id = %s
+    """, (channel_id, message_id, betting_match_id))
+
+    conn.commit()
+    conn.close()
+
+
+def row_to_betting_match(row):
+    if not row:
+        return None
+
+    return {
+        "id": row[0],
+        "created_at": row[1],
+        "closes_at": row[2],
+        "status": row[3],
+        "blue_team": json.loads(row[4]),
+        "red_team": json.loads(row[5]),
+        "blue_pool": row[6] or 0,
+        "red_pool": row[7] or 0,
+        "winner": row[8],
+        "message_id": row[9],
+        "channel_id": row[10]
+    }
+
+
+def get_betting_match(betting_match_id):
+    if betting_match_id is None:
+        return None
+
+    conn = connect()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT id, created_at, closes_at, status,
+               blue_team, red_team, blue_pool, red_pool,
+               winner, message_id, channel_id
+        FROM betting_matches
+        WHERE id = %s
+    """, (betting_match_id,))
+
+    row = cursor.fetchone()
+    conn.close()
+
+    return row_to_betting_match(row)
+
+
+def close_betting_match(betting_match_id):
+    conn = connect()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        UPDATE betting_matches
+        SET status = 'closed'
+        WHERE id = %s AND status = 'open'
+    """, (betting_match_id,))
+
+    rows_changed = cursor.rowcount
+    conn.commit()
+    conn.close()
+
+    return rows_changed > 0
+
+
+def recompute_betting_pools(cursor, betting_match_id):
+    cursor.execute("""
+        SELECT
+            COALESCE(SUM(CASE WHEN side = 'blue' THEN amount ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN side = 'red' THEN amount ELSE 0 END), 0)
+        FROM bets
+        WHERE betting_match_id = %s
+    """, (betting_match_id,))
+
+    blue_pool, red_pool = cursor.fetchone()
+
+    cursor.execute("""
+        UPDATE betting_matches
+        SET blue_pool = %s,
+            red_pool = %s
+        WHERE id = %s
+    """, (blue_pool, red_pool, betting_match_id))
+
+    return blue_pool, red_pool
+
+
+def place_or_update_bet(betting_match_id, discord_id, side, amount):
+    amount = int(amount)
+
+    conn = connect()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT status
+        FROM betting_matches
+        WHERE id = %s
+        FOR UPDATE
+    """, (betting_match_id,))
+
+    match_row = cursor.fetchone()
+
+    if not match_row:
+        conn.close()
+        return False, "Betting match not found."
+
+    if match_row[0] != "open":
+        conn.close()
+        return False, "Betting is already closed."
+
+    cursor.execute("""
+        SELECT coins
+        FROM players
+        WHERE discord_id = %s
+        FOR UPDATE
+    """, (discord_id,))
+
+    player_row = cursor.fetchone()
+
+    if not player_row:
+        conn.close()
+        return False, "You need to sign up before betting."
+
+    current_balance = player_row[0] or 0
+
+    cursor.execute("""
+        SELECT amount
+        FROM bets
+        WHERE betting_match_id = %s AND discord_id = %s
+        FOR UPDATE
+    """, (betting_match_id, discord_id))
+
+    previous_bet = cursor.fetchone()
+    previous_amount = previous_bet[0] if previous_bet else 0
+
+    available_balance = current_balance + previous_amount
+
+    if amount > available_balance:
+        conn.close()
+        return False, f"Not enough coins. Available: {available_balance:,}."
+
+    now_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    if previous_bet:
+        cursor.execute("""
+            UPDATE bets
+            SET side = %s,
+                amount = %s,
+                created_at = %s
+            WHERE betting_match_id = %s AND discord_id = %s
+        """, (side, amount, now_text, betting_match_id, discord_id))
+    else:
+        cursor.execute("""
+            INSERT INTO bets (
+                betting_match_id, discord_id, side, amount, created_at
+            )
+            VALUES (%s, %s, %s, %s, %s)
+        """, (betting_match_id, discord_id, side, amount, now_text))
+
+    cursor.execute("""
+        UPDATE players
+        SET coins = %s
+        WHERE discord_id = %s
+    """, (available_balance - amount, discord_id))
+
+    recompute_betting_pools(cursor, betting_match_id)
+
+    conn.commit()
+    conn.close()
+
+    return True, "Bet placed."
+
+
+def get_bets_for_match(betting_match_id):
+    conn = connect()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT b.discord_id, p.name, b.side, b.amount
+        FROM bets b
+        LEFT JOIN players p ON p.discord_id = b.discord_id
+        WHERE b.betting_match_id = %s
+        ORDER BY b.amount DESC
+    """, (betting_match_id,))
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    return rows
+
+
+def settle_betting_match(betting_match_id, winner):
+    conn = connect()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT status
+        FROM betting_matches
+        WHERE id = %s
+        FOR UPDATE
+    """, (betting_match_id,))
+
+    row = cursor.fetchone()
+
+    if not row:
+        conn.close()
+        return {"settled": False, "reason": "not_found"}
+
+    if row[0] == "settled":
+        conn.close()
+        return {"settled": False, "reason": "already_settled"}
+
+    if row[0] == "refunded":
+        conn.close()
+        return {"settled": False, "reason": "refunded"}
+
+    cursor.execute("""
+        SELECT discord_id, side, amount
+        FROM bets
+        WHERE betting_match_id = %s
+    """, (betting_match_id,))
+
+    bets = cursor.fetchall()
+
+    total_pool = sum(row[2] for row in bets)
+    winning_pool = sum(row[2] for row in bets if row[1] == winner)
+    losing_pool = total_pool - winning_pool
+
+    now_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    payouts = []
+
+    if total_pool == 0:
+        cursor.execute("""
+            UPDATE betting_matches
+            SET status = 'settled',
+                winner = %s
+            WHERE id = %s
+        """, (winner, betting_match_id))
+
+        conn.commit()
+        conn.close()
+
+        return {
+            "settled": True,
+            "total_pool": 0,
+            "winning_pool": 0,
+            "losing_pool": 0,
+            "payouts": []
+        }
+
+    if winning_pool <= 0:
+        # Nobody picked the winner. Refund all bets.
+        for discord_id, side, amount in bets:
+            cursor.execute("""
+                UPDATE players
+                SET coins = coins + %s
+                WHERE discord_id = %s
+            """, (amount, discord_id))
+
+            cursor.execute("""
+                INSERT INTO betting_payouts (
+                    betting_match_id, discord_id, amount, reason, created_at
+                )
+                VALUES (%s, %s, %s, 'no_winners_refund', %s)
+            """, (betting_match_id, discord_id, amount, now_text))
+
+            payouts.append((discord_id, amount))
+
+    else:
+        for discord_id, side, amount in bets:
+            if side != winner:
+                continue
+
+            profit = (amount * losing_pool) // winning_pool
+            payout = amount + profit
+
+            cursor.execute("""
+                UPDATE players
+                SET coins = coins + %s
+                WHERE discord_id = %s
+            """, (payout, discord_id))
+
+            cursor.execute("""
+                INSERT INTO betting_payouts (
+                    betting_match_id, discord_id, amount, reason, created_at
+                )
+                VALUES (%s, %s, %s, 'settlement', %s)
+            """, (betting_match_id, discord_id, payout, now_text))
+
+            payouts.append((discord_id, payout))
+
+    cursor.execute("""
+        UPDATE betting_matches
+        SET status = 'settled',
+            winner = %s
+        WHERE id = %s
+    """, (winner, betting_match_id))
+
+    conn.commit()
+    conn.close()
+
+    return {
+        "settled": True,
+        "total_pool": total_pool,
+        "winning_pool": winning_pool,
+        "losing_pool": losing_pool,
+        "payouts": payouts
+    }
+
+
+def rollback_betting_settlement(betting_match_id):
+    conn = connect()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT discord_id, amount
+        FROM betting_payouts
+        WHERE betting_match_id = %s
+    """, (betting_match_id,))
+
+    payouts = cursor.fetchall()
+
+    for discord_id, amount in payouts:
+        cursor.execute("""
+            UPDATE players
+            SET coins = GREATEST(coins - %s, 0)
+            WHERE discord_id = %s
+        """, (amount, discord_id))
+
+    cursor.execute("""
+        DELETE FROM betting_payouts
+        WHERE betting_match_id = %s
+    """, (betting_match_id,))
+
+    cursor.execute("""
+        UPDATE betting_matches
+        SET status = 'closed',
+            winner = NULL
+        WHERE id = %s AND status = 'settled'
+    """, (betting_match_id,))
+
+    conn.commit()
+    conn.close()
+
+    return len(payouts)
+
+
+def refund_betting_match(betting_match_id):
+    conn = connect()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT status
+        FROM betting_matches
+        WHERE id = %s
+        FOR UPDATE
+    """, (betting_match_id,))
+
+    row = cursor.fetchone()
+
+    if not row:
+        conn.close()
+        return 0
+
+    if row[0] == "refunded":
+        conn.close()
+        return 0
+
+    if row[0] == "settled":
+        # Undo settlement payouts first, then refund original reserved bets.
+        cursor.execute("""
+            SELECT discord_id, amount
+            FROM betting_payouts
+            WHERE betting_match_id = %s
+        """, (betting_match_id,))
+
+        payouts = cursor.fetchall()
+
+        for discord_id, amount in payouts:
+            cursor.execute("""
+                UPDATE players
+                SET coins = GREATEST(coins - %s, 0)
+                WHERE discord_id = %s
+            """, (amount, discord_id))
+
+        cursor.execute("""
+            DELETE FROM betting_payouts
+            WHERE betting_match_id = %s
+        """, (betting_match_id,))
+
+    cursor.execute("""
+        SELECT discord_id, amount
+        FROM bets
+        WHERE betting_match_id = %s
+    """, (betting_match_id,))
+
+    bets = cursor.fetchall()
+
+    for discord_id, amount in bets:
+        cursor.execute("""
+            UPDATE players
+            SET coins = coins + %s
+            WHERE discord_id = %s
+        """, (amount, discord_id))
+
+    cursor.execute("""
+        UPDATE betting_matches
+        SET status = 'refunded'
+        WHERE id = %s
+    """, (betting_match_id,))
+
+    conn.commit()
+    conn.close()
+
+    return len(bets)
+
+
+def get_bet_history(discord_id, limit=10):
+    conn = connect()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT bm.id, bm.status, bm.winner, b.side, b.amount, b.created_at
+        FROM bets b
+        JOIN betting_matches bm ON bm.id = b.betting_match_id
+        WHERE b.discord_id = %s
+        ORDER BY b.id DESC
+        LIMIT %s
+    """, (discord_id, limit))
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    return rows
 
 
 

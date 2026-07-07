@@ -2,6 +2,9 @@ import os
 import itertools
 import json
 import copy
+import asyncio
+from datetime import datetime, timedelta
+
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
@@ -17,7 +20,21 @@ from database import (
     get_match_history,
     calculate_elo_change,
     drop_all_role_ratings_to_nearest_hundred,
-    full_season_rollover
+    full_season_rollover,
+    get_player_coin_balance,
+    add_coins,
+    award_match_coin_rewards,
+    get_coin_leaderboard,
+    create_betting_match,
+    set_betting_message,
+    get_betting_match,
+    close_betting_match,
+    place_or_update_bet,
+    get_bets_for_match,
+    settle_betting_match,
+    rollback_betting_settlement,
+    refund_betting_match,
+    get_bet_history
 )
 
 load_dotenv()
@@ -35,6 +52,9 @@ STAFF_ROLE_NAMES = ["Customs Admin", "Moderator"]
 PROMOTION_CHANNEL_NAME = "general"
 MATCH_HISTORY_CHANNEL_NAME = "match-history"
 WINRATE_CHANNEL_NAME = "winrates"
+BETTING_CHANNEL_NAME = "betting"
+BETTING_WINDOW_SECONDS = 180
+MIN_BET_AMOUNT = 1000
 RANK_ROLE_NAMES = [
     "Iron", "Bronze", "Silver", "Gold", "Platinum", "Emerald", "Diamond",
     "Master", "Grandmaster", "Challenger"
@@ -733,6 +753,7 @@ last_match_history_channel_id = None
 generated_team_signatures = set()
 last_result_rollback = None
 winrate_message_id = None
+active_betting_id = None
 
 
 def is_admin(ctx):
@@ -1332,6 +1353,310 @@ async def create_queue_message(channel, replace_existing=True):
         print(f"Could not add join reaction to queue message: {e}")
 
     return msg
+
+
+def format_coins(amount):
+    return f"{int(amount):,}"
+
+
+def betting_team_payload(team):
+    return [
+        {
+            "discord_id": player["discord_id"],
+            "name": player["name"],
+            "assigned_role": player["assigned_role"]
+        }
+        for player in team
+    ]
+
+
+def betting_team_ids(betting_match, side):
+    team = betting_match["blue_team"] if side == "blue" else betting_match["red_team"]
+    return {int(player["discord_id"]) for player in team}
+
+
+def get_betting_channel(guild):
+    if guild is None:
+        return None
+
+    return discord.utils.get(guild.text_channels, name=BETTING_CHANNEL_NAME)
+
+
+def betting_closes_timestamp(closes_at_text):
+    try:
+        dt = datetime.fromisoformat(closes_at_text)
+    except Exception:
+        return "soon"
+
+    return f"<t:{int(dt.timestamp())}:R>"
+
+
+def build_betting_embed(betting_match):
+    status = betting_match["status"]
+    color = COLOR_SUCCESS if status == "open" else COLOR_WARNING
+
+    status_text = {
+        "open": f"🟢 Betting Open — closes {betting_closes_timestamp(betting_match['closes_at'])}",
+        "closed": "🔒 Betting Closed — waiting for result",
+        "settled": f"✅ Settled — {str(betting_match.get('winner', '')).capitalize()} won",
+        "refunded": "↩️ Refunded"
+    }.get(status, status.title())
+
+    embed = discord.Embed(
+        title=f"🎰 Match Betting #{betting_match['id']}",
+        description=(
+            f"{status_text}\n\n"
+            "Players in the game may only bet on their own team. Spectators may bet either side.\n"
+            "No max bet. Coins are reserved immediately when you place a bet."
+        ),
+        color=color
+    )
+
+    blue_lines = [
+        f"{role_emoji(player['assigned_role'])} **{player['assigned_role']}** — {player['name']}"
+        for player in betting_match["blue_team"]
+    ]
+
+    red_lines = [
+        f"{role_emoji(player['assigned_role'])} **{player['assigned_role']}** — {player['name']}"
+        for player in betting_match["red_team"]
+    ]
+
+    embed.add_field(
+        name=f"🔵 Blue Pool — {format_coins(betting_match['blue_pool'])}",
+        value="\n".join(blue_lines),
+        inline=True
+    )
+
+    embed.add_field(
+        name=f"🔴 Red Pool — {format_coins(betting_match['red_pool'])}",
+        value="\n".join(red_lines),
+        inline=True
+    )
+
+    total_pool = betting_match["blue_pool"] + betting_match["red_pool"]
+
+    embed.add_field(
+        name="Pot",
+        value=f"**Total:** {format_coins(total_pool)} coins\n**Minimum Bet:** {format_coins(MIN_BET_AMOUNT)} coins",
+        inline=False
+    )
+
+    embed.set_footer(text="Betting closes automatically. Shuffle/cancel refunds all open bets.")
+
+    return embed
+
+
+async def update_betting_message(betting_id):
+    betting_match = get_betting_match(betting_id)
+
+    if not betting_match:
+        return False
+
+    channel_id = betting_match.get("channel_id")
+    message_id = betting_match.get("message_id")
+
+    if not channel_id or not message_id:
+        return False
+
+    channel = bot.get_channel(channel_id)
+
+    if channel is None:
+        return False
+
+    try:
+        msg = await channel.fetch_message(message_id)
+        view = BettingView(betting_id) if betting_match["status"] == "open" else None
+        await msg.edit(embed=build_betting_embed(betting_match), view=view)
+        return True
+    except Exception as e:
+        print(f"Could not update betting message: {e}")
+        return False
+
+
+async def close_betting_after_delay(betting_id, delay_seconds):
+    await asyncio.sleep(delay_seconds)
+
+    betting_match = get_betting_match(betting_id)
+
+    if not betting_match or betting_match["status"] != "open":
+        return
+
+    close_betting_match(betting_id)
+    await update_betting_message(betting_id)
+
+
+async def open_betting_for_current_match(guild):
+    global active_betting_id
+
+    if not last_blue_team or not last_red_team:
+        return None
+
+    channel = get_betting_channel(guild)
+
+    if channel is None:
+        print(f"Could not find #{BETTING_CHANNEL_NAME} channel.")
+        return None
+
+    closes_at = (datetime.now() + timedelta(seconds=BETTING_WINDOW_SECONDS)).isoformat(timespec="seconds")
+
+    betting_id = create_betting_match(
+        blue_team=betting_team_payload(last_blue_team),
+        red_team=betting_team_payload(last_red_team),
+        closes_at=closes_at,
+        channel_id=channel.id,
+        message_id=None
+    )
+
+    active_betting_id = betting_id
+
+    betting_match = get_betting_match(betting_id)
+    msg = await channel.send(
+        embed=build_betting_embed(betting_match),
+        view=BettingView(betting_id)
+    )
+
+    set_betting_message(betting_id, channel.id, msg.id)
+
+    bot.loop.create_task(close_betting_after_delay(betting_id, BETTING_WINDOW_SECONDS))
+
+    return betting_id
+
+
+async def refund_active_betting(reason="Betting refunded."):
+    global active_betting_id
+
+    if active_betting_id is None:
+        return 0
+
+    refunded_count = refund_betting_match(active_betting_id)
+    await update_betting_message(active_betting_id)
+    active_betting_id = None
+
+    return refunded_count
+
+
+async def settle_active_betting(winner):
+    global active_betting_id
+
+    if active_betting_id is None:
+        return None
+
+    betting_match = get_betting_match(active_betting_id)
+
+    if not betting_match:
+        active_betting_id = None
+        return None
+
+    if betting_match["status"] == "open":
+        close_betting_match(active_betting_id)
+
+    result = settle_betting_match(active_betting_id, winner)
+    await update_betting_message(active_betting_id)
+
+    return result
+
+
+class BetAmountModal(discord.ui.Modal):
+    def __init__(self, betting_id, side):
+        super().__init__(title=f"Bet on {side.capitalize()}")
+        self.betting_id = betting_id
+        self.side = side
+
+        self.amount = discord.ui.TextInput(
+            label="Bet amount",
+            placeholder="Example: 10000",
+            min_length=1,
+            max_length=12
+        )
+
+        self.add_item(self.amount)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        betting_match = get_betting_match(self.betting_id)
+
+        if not betting_match:
+            await interaction.response.send_message("This betting match no longer exists.", ephemeral=True)
+            return
+
+        if betting_match["status"] != "open":
+            await interaction.response.send_message("Betting is already closed for this match.", ephemeral=True)
+            return
+
+        try:
+            closes_at = datetime.fromisoformat(betting_match["closes_at"])
+            if datetime.now() >= closes_at:
+                close_betting_match(self.betting_id)
+                await update_betting_message(self.betting_id)
+                await interaction.response.send_message("Betting just closed for this match.", ephemeral=True)
+                return
+        except Exception:
+            pass
+
+        try:
+            amount = int(str(self.amount.value).replace(",", "").strip())
+        except ValueError:
+            await interaction.response.send_message("Enter a valid whole number of coins.", ephemeral=True)
+            return
+
+        if amount < MIN_BET_AMOUNT:
+            await interaction.response.send_message(
+                f"Minimum bet is {format_coins(MIN_BET_AMOUNT)} coins.",
+                ephemeral=True
+            )
+            return
+
+        user_id = interaction.user.id
+        blue_ids = betting_team_ids(betting_match, "blue")
+        red_ids = betting_team_ids(betting_match, "red")
+
+        if user_id in blue_ids and self.side == "red":
+            await interaction.response.send_message(
+                "You are playing on Blue Team, so you can only bet on Blue.",
+                ephemeral=True
+            )
+            return
+
+        if user_id in red_ids and self.side == "blue":
+            await interaction.response.send_message(
+                "You are playing on Red Team, so you can only bet on Red.",
+                ephemeral=True
+            )
+            return
+
+        success, message = place_or_update_bet(
+            betting_match_id=self.betting_id,
+            discord_id=user_id,
+            side=self.side,
+            amount=amount
+        )
+
+        if not success:
+            await interaction.response.send_message(message, ephemeral=True)
+            return
+
+        updated_match = get_betting_match(self.betting_id)
+        await update_betting_message(self.betting_id)
+
+        await interaction.response.send_message(
+            f"Bet placed: **{format_coins(amount)}** coins on **{self.side.capitalize()}**.",
+            ephemeral=True
+        )
+
+
+class BettingView(discord.ui.View):
+    def __init__(self, betting_id):
+        super().__init__(timeout=None)
+        self.betting_id = betting_id
+
+    @discord.ui.button(label="Bet Blue", style=discord.ButtonStyle.primary, emoji="🔵")
+    async def bet_blue(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(BetAmountModal(self.betting_id, "blue"))
+
+    @discord.ui.button(label="Bet Red", style=discord.ButtonStyle.danger, emoji="🔴")
+    async def bet_red(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(BetAmountModal(self.betting_id, "red"))
+
 
 
 class SignupView(discord.ui.View):
@@ -3001,6 +3326,7 @@ async def teams(ctx):
     last_teams_channel_id = ctx.channel.id
 
     await post_generated_teams_to_match_history(ctx.guild)
+    await open_betting_for_current_match(ctx.guild)
 
 
 @bot.command()
@@ -3020,6 +3346,8 @@ async def shuffle(ctx):
         return
 
     players = last_blue_team + last_red_team
+
+    await refund_active_betting("Teams were shuffled.")
 
     if not generated_team_signatures:
         generated_team_signatures = {matchup_signature(last_blue_team, last_red_team)}
@@ -3064,10 +3392,12 @@ async def shuffle(ctx):
     if not updated_history:
         await post_generated_teams_to_match_history(ctx.guild)
 
+    await open_betting_for_current_match(ctx.guild)
+
     await send_embed(
         ctx,
         "Teams Shuffled",
-        "Generated a new unique team split. The teams message and #match-history message were updated.",
+        "Generated a new unique team split. The teams message, #match-history message, and betting post were updated.",
         COLOR_SUCCESS
     )
 
@@ -3211,7 +3541,7 @@ def calculate_player_lobby_rating_change(player, lobby_average, base_change, won
 
 @bot.command()
 async def result(ctx, winner: str):
-    global queue_locked, last_blue_team, last_red_team, last_teams_message_id, last_teams_channel_id, last_match_history_message_id, last_match_history_channel_id, generated_team_signatures, last_result_rollback
+    global queue_locked, last_blue_team, last_red_team, last_teams_message_id, last_teams_channel_id, last_match_history_message_id, last_match_history_channel_id, generated_team_signatures, last_result_rollback, active_betting_id
 
     if not await require_admin(ctx):
         return
@@ -3242,7 +3572,9 @@ async def result(ctx, winner: str):
         "last_match_history_channel_id": last_match_history_channel_id,
         "generated_team_signatures": copy.deepcopy(generated_team_signatures),
         "player_changes": [],
-        "match_id": None
+        "match_id": None,
+        "betting_id": active_betting_id,
+        "coin_rewards": []
     }
 
     blue_rating = sum(role_rating(p, p["assigned_role"]) for p in last_blue_team)
@@ -3352,6 +3684,14 @@ async def result(ctx, winner: str):
     if last_result_rollback is not None:
         last_result_rollback["match_id"] = get_latest_match_id()
 
+    betting_result = await settle_active_betting(winner)
+
+    played_ids = [player["discord_id"] for player in last_blue_team + last_red_team]
+    coin_rewards = award_match_coin_rewards(played_ids)
+
+    if last_result_rollback is not None:
+        last_result_rollback["coin_rewards"] = coin_rewards
+
     color = COLOR_BLUE_TEAM if winner == "blue" else COLOR_RED_TEAM
 
     embed = discord.Embed(
@@ -3381,6 +3721,28 @@ async def result(ctx, winner: str):
 
     embed.add_field(name="Blue Team Rating", value=str(blue_rating), inline=True)
     embed.add_field(name="Red Team Rating", value=str(red_rating), inline=True)
+
+    if betting_result and betting_result.get("settled"):
+        embed.add_field(
+            name="Betting",
+            value=(
+                f"Total Pot: **{format_coins(betting_result.get('total_pool', 0))}** coins\n"
+                f"Winner Pool: **{format_coins(betting_result.get('winning_pool', 0))}** coins\n"
+                f"Payouts: **{len(betting_result.get('payouts', []))}**"
+            ),
+            inline=False
+        )
+
+    signed_count = len(coin_rewards) - len(played_ids)
+    embed.add_field(
+        name="Coin Rewards",
+        value=(
+            f"Players in match: **+30,000** coins each\n"
+            f"Other signed-up players: **+5,000** coins each\n"
+            f"Rewarded: **{len(played_ids)}** players + **{signed_count}** signed-up players"
+        ),
+        inline=False
+    )
 
     if promoted_players:
         promotion_lines = []
@@ -3428,6 +3790,8 @@ async def result(ctx, winner: str):
             inline=False
         )
 
+    active_betting_id = None
+
     await ctx.send(embed=embed)
 
     await update_winrate_channel(ctx.guild)
@@ -3437,7 +3801,7 @@ async def result(ctx, winner: str):
 async def rollback(ctx):
     global queue_locked, last_blue_team, last_red_team, last_teams_message_id, last_teams_channel_id
     global last_match_history_message_id, last_match_history_channel_id, generated_team_signatures
-    global player_queue, waitlist_queue, last_result_rollback
+    global player_queue, waitlist_queue, last_result_rollback, active_betting_id
 
     if not await require_admin(ctx):
         return
@@ -3467,6 +3831,17 @@ async def rollback(ctx):
         new_overall = update_overall_rating_from_selected_roles(change["discord_id"])
         member = ctx.guild.get_member(change["discord_id"]) if ctx.guild else None
         await sync_member_rank_role(member, new_overall)
+
+    # Undo betting settlement and coin rewards.
+    rollback_betting_id = rollback_data.get("betting_id")
+
+    if rollback_betting_id is not None:
+        rollback_betting_settlement(rollback_betting_id)
+        active_betting_id = rollback_betting_id
+        await update_betting_message(rollback_betting_id)
+
+    for discord_id, reward_amount in rollback_data.get("coin_rewards", []):
+        add_coins(discord_id, -reward_amount)
 
     # Remove the wrong result from match history.
     deleted_match = delete_match_by_id(rollback_data.get("match_id"))
@@ -3516,10 +3891,90 @@ async def rollback(ctx):
         (
             f"Undid the **{wrong_winner}** result.\n"
             f"Match history entry deleted: **{'Yes' if deleted_match else 'No'}**\n\n"
-            "The teams have been restored and the result buttons have been re-enabled in #match-history."
+            "The teams have been restored, coin rewards were reversed, betting settlement was reopened, and the result buttons have been re-enabled in #match-history."
         ),
         COLOR_SUCCESS
     )
+
+
+
+@bot.command()
+async def coins(ctx, member: discord.Member = None):
+    member = member or ctx.author
+    player = get_player(member.id)
+
+    if not player:
+        await send_embed(
+            ctx,
+            "No Coin Balance",
+            f"{member.display_name} has not signed up yet.",
+            COLOR_WARNING
+        )
+        return
+
+    await send_embed(
+        ctx,
+        "Coin Balance",
+        f"**{member.display_name}** has **{format_coins(player.get('coins', 0))}** coins.",
+        COLOR_SUCCESS
+    )
+
+
+@bot.command()
+async def coinleaderboard(ctx, page: int = 1):
+    if page < 1:
+        page = 1
+
+    per_page = 10
+    offset = (page - 1) * per_page
+    rows = get_coin_leaderboard(per_page, offset)
+
+    if not rows:
+        await send_embed(ctx, "Coin Leaderboard", f"No players found on page {page}.", COLOR_WARNING)
+        return
+
+    lines = []
+
+    for index, (name, coins_amount) in enumerate(rows, start=offset + 1):
+        medal = "🥇" if index == 1 else "🥈" if index == 2 else "🥉" if index == 3 else f"**#{index}**"
+        lines.append(f"{medal} **{name}** — {format_coins(coins_amount)} coins")
+
+    embed = discord.Embed(
+        title=f"Coin Leaderboard — Page {page}",
+        description="\n".join(lines),
+        color=COLOR_SUCCESS
+    )
+
+    embed.set_footer(text=f"Use !coinleaderboard {page + 1} for the next page.")
+    await ctx.send(embed=embed)
+
+
+@bot.command()
+async def bethistory(ctx):
+    rows = get_bet_history(ctx.author.id, limit=10)
+
+    if not rows:
+        await send_embed(ctx, "Bet History", "You do not have any recent bets.", COLOR_WARNING)
+        return
+
+    lines = []
+
+    for match_id, status, winner, side, amount, created_at in rows:
+        result_text = ""
+        if winner:
+            result_text = f" • winner: {winner}"
+
+        lines.append(
+            f"**Match #{match_id}** — {side.capitalize()} — {format_coins(amount)} coins • {status}{result_text}"
+        )
+
+    embed = discord.Embed(
+        title="Your Bet History",
+        description="\n".join(lines),
+        color=COLOR_PROFILE
+    )
+
+    await ctx.send(embed=embed)
 
 
 
