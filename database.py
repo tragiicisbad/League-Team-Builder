@@ -1,5 +1,4 @@
 import json
-import math
 import os
 from datetime import datetime
 
@@ -1164,10 +1163,3 @@ def get_match_history(limit=5):
 
     return rows
 
-
-def expected_score(team_rating, opponent_rating):
-    return 1 / (1 + math.pow(10, (opponent_rating - team_rating) / 400))
-
-
-def calculate_elo_change(winner_rating, loser_rating, k=32):
-    return 30

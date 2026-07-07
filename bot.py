@@ -18,7 +18,6 @@ from database import (
     get_leaderboard,
     save_match,
     get_match_history,
-    calculate_elo_change,
     drop_all_role_ratings_to_nearest_hundred,
     full_season_rollover,
     get_player_coin_balance,
@@ -750,7 +749,6 @@ last_teams_embed_title = "Balanced Teams Generated"
 last_teams_embed_description = None
 last_match_history_message_id = None
 last_match_history_channel_id = None
-generated_team_signatures = set()
 last_result_rollback = None
 winrate_message_id = None
 active_betting_id = None
@@ -2012,7 +2010,7 @@ async def profile(ctx, member: discord.Member = None):
     player = get_player(member.id)
 
     if not player:
-        await send_embed(ctx, "Profile Not Found", f"{member.display_name} has not signed up yet. Use `!signup`.", COLOR_ERROR)
+        await send_embed(ctx, "Profile Not Found", f"{member.display_name} has not signed up yet. Use `/signup`.", COLOR_ERROR)
         return
 
     role_lines = []
@@ -2094,7 +2092,7 @@ async def on_raw_reaction_add(payload):
         await channel.send(
             embed=discord.Embed(
                 title="Signup Required",
-                description=f"{member.mention}, use `!signup` before joining the queue.",
+                description=f"{member.mention}, use `/signup` before joining the queue.",
                 color=COLOR_WARNING
             )
         )
@@ -2189,7 +2187,7 @@ async def waitlist(ctx):
 
 @bot.command()
 async def clearqueue(ctx):
-    global queue_locked, last_blue_team, last_red_team, last_teams_message_id, last_teams_channel_id, last_match_history_message_id, last_match_history_channel_id, generated_team_signatures
+    global queue_locked, last_blue_team, last_red_team, last_teams_message_id, last_teams_channel_id, last_match_history_message_id, last_match_history_channel_id
 
     if not await require_admin(ctx):
         return
@@ -2203,7 +2201,6 @@ async def clearqueue(ctx):
     last_teams_channel_id = None
     last_match_history_message_id = None
     last_match_history_channel_id = None
-    generated_team_signatures = set()
 
     await delete_queue_message()
 
@@ -2446,106 +2443,6 @@ def find_balanced_teams(players):
     return best_blue, best_red, best_rating_diff, best_lane_diff, best_role_penalty
 
 
-def team_id_set(team):
-    return frozenset(player["discord_id"] for player in team)
-
-
-def matchup_signature(blue_team, red_team):
-    """
-    Tracks player groupings while ignoring side/color.
-    This prevents !shuffle from returning the same 5-player groups with colors swapped.
-    """
-    return frozenset([
-        team_id_set(blue_team),
-        team_id_set(red_team)
-    ])
-
-
-def find_balanced_teams_excluding(players, excluded_signatures):
-    best_blue = None
-    best_red = None
-    best_score = None
-    best_rating_diff = None
-    best_lane_diff = None
-    best_role_penalty = None
-
-    highest_player, second_highest_player = get_top_two_players(players)
-
-    highest_id = highest_player["discord_id"] if highest_player else None
-    second_highest_id = second_highest_player["discord_id"] if second_highest_player else None
-    top_two_shared_role = shared_top_two_role(highest_player, second_highest_player)
-
-    forced_roles = {}
-
-    if highest_id is not None and second_highest_id is not None and top_two_shared_role is not None:
-        forced_roles = {
-            highest_id: top_two_shared_role,
-            second_highest_id: top_two_shared_role
-        }
-
-    for blue_group in itertools.combinations(players, 5):
-        blue_ids = {player["discord_id"] for player in blue_group}
-
-        # Force the two highest-rated players to be on opposite teams.
-        if highest_id is not None and second_highest_id is not None:
-            highest_on_blue = highest_id in blue_ids
-            second_on_blue = second_highest_id in blue_ids
-
-            if highest_on_blue == second_on_blue:
-                continue
-
-        red_group = [p for p in players if p not in blue_group]
-
-        blue_assigned, blue_penalty = best_role_assignment(
-            list(blue_group),
-            flexible_player_id=highest_id,
-            forced_roles=forced_roles
-        )
-        red_assigned, red_penalty = best_role_assignment(
-            red_group,
-            flexible_player_id=highest_id,
-            forced_roles=forced_roles
-        )
-
-        if blue_assigned is None or red_assigned is None:
-            continue
-
-        signature = matchup_signature(blue_assigned, red_assigned)
-
-        if signature in excluded_signatures:
-            continue
-
-        blue_total = sum(role_rating(p, p["assigned_role"]) for p in blue_assigned)
-        red_total = sum(role_rating(p, p["assigned_role"]) for p in red_assigned)
-
-        rating_diff = abs(blue_total - red_total)
-
-        lane_diff, max_lane_diff, over_cap_total, over_cap_roles = lane_balance_stats(
-            blue_assigned,
-            red_assigned
-        )
-
-        total_role_penalty = blue_penalty + red_penalty
-
-        score = matchmaking_score(
-            rating_diff=rating_diff,
-            lane_diff=lane_diff,
-            over_cap_total=over_cap_total,
-            role_penalty_total=total_role_penalty
-        )
-
-        if best_score is None or score < best_score:
-            best_score = score
-            best_blue = blue_assigned
-            best_red = red_assigned
-            best_rating_diff = rating_diff
-            best_lane_diff = lane_diff
-            best_role_penalty = total_role_penalty
-
-    return best_blue, best_red, best_rating_diff, best_lane_diff, best_role_penalty
-
-
-
 @bot.command()
 async def edit(ctx, member: discord.Member):
     if not await require_admin(ctx):
@@ -2580,7 +2477,7 @@ async def setrank(ctx, member: discord.Member, *, rank: str):
         await send_embed(
             ctx,
             "Player Not Found",
-            f"{member.display_name} has not signed up yet. They need to use `!signup` first.",
+            f"{member.display_name} has not signed up yet. They need to use `/signup` first.",
             COLOR_ERROR
         )
         return
@@ -2626,7 +2523,7 @@ async def setrating(ctx, member: discord.Member, rating: int):
         await send_embed(
             ctx,
             "Player Not Found",
-            f"{member.display_name} has not signed up yet. They need to use `!signup` first.",
+            f"{member.display_name} has not signed up yet. They need to use `/signup` first.",
             COLOR_ERROR
         )
         return
@@ -2663,7 +2560,7 @@ async def setrolerating(ctx, member: discord.Member, role: str, rating: int):
         await send_embed(
             ctx,
             "Player Not Found",
-            f"{member.display_name} has not signed up yet. They need to use `!signup` first.",
+            f"{member.display_name} has not signed up yet. They need to use `/signup` first.",
             COLOR_ERROR
         )
         return
@@ -2719,7 +2616,7 @@ async def setavoidrole(ctx, member: discord.Member, *, role: str):
         await send_embed(
             ctx,
             "Player Not Found",
-            f"{member.display_name} has not signed up yet. They need to use `!signup` first.",
+            f"{member.display_name} has not signed up yet. They need to use `/signup` first.",
             COLOR_ERROR
         )
         return
@@ -2882,7 +2779,7 @@ async def season2ratings(ctx):
 @bot.command()
 async def seasonrollover(ctx, *, season_name: str = "Season 1"):
     global queue_locked, last_blue_team, last_red_team, last_teams_message_id, last_teams_channel_id
-    global last_match_history_message_id, last_match_history_channel_id, generated_team_signatures
+    global last_match_history_message_id, last_match_history_channel_id
     global last_result_rollback
 
     if not await require_admin(ctx):
@@ -2915,7 +2812,6 @@ async def seasonrollover(ctx, *, season_name: str = "Season 1"):
     last_teams_channel_id = None
     last_match_history_message_id = None
     last_match_history_channel_id = None
-    generated_team_signatures = set()
     last_result_rollback = None
 
     await delete_queue_message()
@@ -3262,7 +3158,7 @@ class ResultView(discord.ui.View):
 
 @bot.command()
 async def teams(ctx):
-    global last_blue_team, last_red_team, queue_locked, last_teams_message_id, last_teams_channel_id, generated_team_signatures
+    global last_blue_team, last_red_team, queue_locked, last_teams_message_id, last_teams_channel_id
     global last_teams_embed_title, last_teams_embed_description
 
     if len(player_queue) < MAX_QUEUE_SIZE:
@@ -3279,7 +3175,6 @@ async def teams(ctx):
 
     last_blue_team = best_blue
     last_red_team = best_red
-    generated_team_signatures = {matchup_signature(last_blue_team, last_red_team)}
     queue_locked = True
     await update_queue_message()
 
@@ -3296,83 +3191,6 @@ async def teams(ctx):
 
     await post_generated_teams_to_match_history(ctx.guild)
     await open_betting_for_current_match(ctx.guild)
-
-
-@bot.command()
-async def shuffle(ctx):
-    global last_blue_team, last_red_team, generated_team_signatures
-    global last_teams_embed_title, last_teams_embed_description
-
-    if not await require_admin(ctx):
-        return
-
-    if not last_blue_team or not last_red_team:
-        await send_embed(
-            ctx,
-            "No Active Teams",
-            "Use `!teams` before using `!shuffle`.",
-            COLOR_WARNING
-        )
-        return
-
-    players = last_blue_team + last_red_team
-
-    if not generated_team_signatures:
-        generated_team_signatures = {matchup_signature(last_blue_team, last_red_team)}
-
-    best_blue, best_red, rating_diff, lane_diff, role_penalty_total = find_balanced_teams_excluding(
-        players,
-        generated_team_signatures
-    )
-
-    if best_blue is None or best_red is None:
-        await send_embed(
-            ctx,
-            "Shuffle Unavailable",
-            "The bot could not find another unique team split for these 10 players.",
-            COLOR_WARNING
-        )
-        return
-
-    await refund_active_betting("Teams were shuffled.")
-
-    old_signature_count = len(generated_team_signatures)
-
-    last_blue_team = best_blue
-    last_red_team = best_red
-    generated_team_signatures.add(matchup_signature(last_blue_team, last_red_team))
-
-    last_teams_embed_title = "Teams Shuffled"
-    last_teams_embed_description = (
-        "Teams were remade using the same 10 players, while avoiding the previous proposed team split.\n"
-        f"Unique team split #{old_signature_count + 1} for this match."
-    )
-    embed = build_teams_embed(
-        title=last_teams_embed_title,
-        description=last_teams_embed_description
-    )
-
-    updated_main = await update_teams_message(embed)
-    updated_history = await update_match_history_teams_message(
-        title="Teams Shuffled",
-        description="Admins can report the winner using the buttons below."
-    )
-
-    if not updated_main:
-        await ctx.send(embed=embed)
-
-    if not updated_history:
-        await post_generated_teams_to_match_history(ctx.guild)
-
-    await open_betting_for_current_match(ctx.guild)
-
-    await send_embed(
-        ctx,
-        "Teams Shuffled",
-        "Generated a new unique team split. The teams message, betting buttons, and #match-history message were updated.",
-        COLOR_SUCCESS
-    )
-
 
 
 @bot.command()
@@ -3485,46 +3303,9 @@ def build_short_rating_formula(lobby_average, base_rating_change):
     )
 
 
-def calculate_player_lobby_rating_change(player, lobby_average, base_change, won):
-    """
-    Competitive lobby-average rating system.
-
-    Everyone starts from BASE_RATING_CHANGE, then the player's assigned-role
-    rating is compared to the lobby average.
-
-    Examples:
-    - Lower-rated player wins in a high-rated lobby: gains more.
-    - Lower-rated player loses in a high-rated lobby: loses less.
-    - Higher-rated player wins in a low-rated lobby: gains less.
-    - Higher-rated player loses in a low-rated lobby: loses more.
-    """
-    player_rating = role_rating(player, player["assigned_role"])
-    rating_gap = lobby_average - player_rating
-
-    if won:
-        if rating_gap >= 0:
-            # Underdog win bonus
-            adjusted_change = BASE_RATING_CHANGE + (rating_gap / 70)
-        else:
-            # Favorite win reduction
-            adjusted_change = BASE_RATING_CHANGE + (rating_gap / 150)
-    else:
-        if rating_gap >= 0:
-            # Underdog loss protection
-            adjusted_change = BASE_RATING_CHANGE - (rating_gap / 100)
-        else:
-            # Favorite loss penalty
-            adjusted_change = BASE_RATING_CHANGE - (rating_gap / 120)
-
-    adjusted_change = round(adjusted_change)
-    adjusted_change = max(MIN_RATING_CHANGE, min(MAX_RATING_CHANGE, adjusted_change))
-
-    return adjusted_change
-
-
 @bot.command()
 async def result(ctx, winner: str):
-    global queue_locked, last_blue_team, last_red_team, last_teams_message_id, last_teams_channel_id, last_match_history_message_id, last_match_history_channel_id, generated_team_signatures, last_result_rollback, active_betting_id
+    global queue_locked, last_blue_team, last_red_team, last_teams_message_id, last_teams_channel_id, last_match_history_message_id, last_match_history_channel_id, last_result_rollback, active_betting_id
 
     if not await require_admin(ctx):
         return
@@ -3553,7 +3334,6 @@ async def result(ctx, winner: str):
         "last_teams_channel_id": last_teams_channel_id,
         "last_match_history_message_id": last_match_history_message_id,
         "last_match_history_channel_id": last_match_history_channel_id,
-        "generated_team_signatures": copy.deepcopy(generated_team_signatures),
         "player_changes": [],
         "match_id": None,
         "betting_id": active_betting_id,
@@ -3783,7 +3563,7 @@ async def result(ctx, winner: str):
 @bot.command()
 async def rollback(ctx):
     global queue_locked, last_blue_team, last_red_team, last_teams_message_id, last_teams_channel_id
-    global last_match_history_message_id, last_match_history_channel_id, generated_team_signatures
+    global last_match_history_message_id, last_match_history_channel_id
     global player_queue, waitlist_queue, last_result_rollback, active_betting_id
     global last_teams_embed_title, last_teams_embed_description
 
@@ -3841,7 +3621,6 @@ async def rollback(ctx):
     last_teams_channel_id = rollback_data.get("last_teams_channel_id")
     last_match_history_message_id = rollback_data.get("last_match_history_message_id")
     last_match_history_channel_id = rollback_data.get("last_match_history_channel_id")
-    generated_team_signatures = copy.deepcopy(rollback_data.get("generated_team_signatures", set()))
 
     # Delete the post-result queue message, then recreate the pre-result locked queue.
     old_queue_channel = bot.get_channel(rollback_data.get("queue_channel_id")) if rollback_data.get("queue_channel_id") else ctx.channel
