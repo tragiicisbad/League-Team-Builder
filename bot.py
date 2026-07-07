@@ -2288,6 +2288,8 @@ async def clearqueue(ctx):
     if not await require_admin(ctx):
         return
 
+    refunded_bets = await refund_active_betting("Queue was cleared.")
+
     player_queue.clear()
     waitlist_queue.clear()
     queue_locked = False
@@ -2303,7 +2305,10 @@ async def clearqueue(ctx):
     await send_embed(
         ctx,
         "Queue Cleared",
-        "The League 5v5 queue and waitlist have been reset. The old queue post was removed.",
+        (
+            "The League 5v5 queue and waitlist have been reset. The old queue post was removed.\n"
+            f"Refunded active bets: **{refunded_bets}**"
+        ),
         COLOR_SUCCESS
     )
 
