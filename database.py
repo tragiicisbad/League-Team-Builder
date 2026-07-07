@@ -9,6 +9,7 @@ from psycopg.rows import tuple_row
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 
+# Database access and schema creation.
 def connect():
     if not DATABASE_URL:
         raise RuntimeError(
@@ -19,6 +20,10 @@ def connect():
 
 
 def setup_database():
+    """
+    Creates the tables used by the bot. The ALTER statements keep older
+    deployments compatible when new columns are added.
+    """
     conn = connect()
     cursor = conn.cursor()
 
@@ -172,6 +177,10 @@ def setup_database():
 
 
 def make_role_ratings(base_rating, primary_role, secondary_role):
+    """
+    Initializes role ratings from the player's starting overall rating.
+    Preferred roles start higher; off-roles start lower.
+    """
     ratings = {
         "Top": base_rating - 250,
         "Jungle": base_rating - 250,
@@ -235,6 +244,9 @@ def save_player(discord_id, name, rank, rating, primary_role, secondary_role, av
 
 
 def row_to_player(row):
+    """
+    Converts a positional database row into the player dict used by bot.py.
+    """
     if not row:
         return None
 
@@ -587,6 +599,10 @@ def add_coins(discord_id, amount):
 
 
 def award_match_coin_rewards(played_ids, signed_reward=5000, played_reward=30000):
+    """
+    Awards participation coins after a match.
+    Players in the match get the larger reward; all other signed-up players get the smaller one.
+    """
     played_ids = set(int(player_id) for player_id in played_ids)
 
     conn = connect()
@@ -632,6 +648,10 @@ def get_coin_leaderboard(limit=10, offset=0):
 
 
 def create_betting_match(blue_team, red_team, closes_at, channel_id=None, message_id=None):
+    """
+    Stores a betting window tied to the Discord teams message.
+    Team data is snapshotted so later result settlement knows who was on each side.
+    """
     conn = connect()
     cursor = conn.cursor()
 
@@ -756,6 +776,10 @@ def recompute_betting_pools(cursor, betting_match_id):
 
 
 def place_or_update_bet(betting_match_id, discord_id, side, amount):
+    """
+    Reserves coins immediately. If the player changes their bet, the old reserved
+    amount is first treated as available balance, then the new amount is reserved.
+    """
     amount = int(amount)
 
     conn = connect()
@@ -860,6 +884,10 @@ def get_bets_for_match(betting_match_id):
 
 
 def settle_betting_match(betting_match_id, winner):
+    """
+    Pays winning bettors from the losing pool, proportional to their winning stake.
+    If nobody picked the winner, everyone is refunded.
+    """
     conn = connect()
     cursor = conn.cursor()
 
@@ -980,6 +1008,10 @@ def settle_betting_match(betting_match_id, winner):
 
 
 def rollback_betting_settlement(betting_match_id):
+    """
+    Removes settlement payouts so a mistaken result can be corrected.
+    Original reserved bets remain in place and the betting match returns to closed.
+    """
     conn = connect()
     cursor = conn.cursor()
 
@@ -1017,6 +1049,10 @@ def rollback_betting_settlement(betting_match_id):
 
 
 def refund_betting_match(betting_match_id):
+    """
+    Returns all original bet amounts. If the match was already settled,
+    settlement payouts are reversed before original bets are refunded.
+    """
     conn = connect()
     cursor = conn.cursor()
 

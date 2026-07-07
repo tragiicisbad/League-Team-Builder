@@ -35,6 +35,8 @@ from database import (
     get_bet_history
 )
 
+
+# Bot setup and server-specific constants.
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 
@@ -114,6 +116,7 @@ ROLE_EMOJIS = {
 }
 
 
+# Display and rating helpers.
 def rank_emoji(rank):
     return RANK_EMOJIS.get(rank, "")
 
@@ -721,6 +724,10 @@ def remove_player_from_database(discord_id):
 
 
 def refresh_player_in_queues(discord_id):
+    """
+    Replaces any queued copy of a player after their saved profile changes.
+    Queue entries are snapshots, so edits need to be pushed into memory too.
+    """
     player = get_player(discord_id)
 
     if not player:
@@ -735,6 +742,7 @@ def refresh_player_in_queues(discord_id):
         waitlist_queue[discord_id] = adjusted_player
 
 
+# Short-lived runtime state. These values reset when the bot restarts.
 queue_message_id = None
 queue_channel_id = None
 
@@ -754,6 +762,7 @@ winrate_message_id = None
 active_betting_id = None
 
 
+# Permission helpers.
 def is_admin(ctx):
     if ctx.author.guild_permissions.administrator:
         return True
@@ -1010,14 +1019,6 @@ def build_teams_embed(title="Balanced Teams Generated", description=None):
             last_red_team
         )
 
-    role_penalty_total = (
-        sum(role_penalty(p, p["assigned_role"]) for p in last_blue_team)
-        + sum(role_penalty(p, p["assigned_role"]) for p in last_red_team)
-    )
-
-    if description is None:
-        description = "Teams were balanced by role fit, lane matchup rating, and total team rating. The bot tries to keep every lane within 400 rating while allowing off-role fills when needed. The top two rated players are forced onto the same role on opposite teams. The active queue is now locked."
-
     embed = discord.Embed(
         title=title,
         description=description,
@@ -1042,12 +1043,7 @@ def build_teams_embed(title="Balanced Teams Generated", description=None):
             f"**Team Rating Difference:** {rating_diff}\n"
             f"**Lane Matchup Difference:** {int(lane_diff)}\n"
             f"**Largest Lane Difference:** {int(max_lane_diff)} / {MAX_LANE_RATING_DIFF}\n"
-            f"**Over-Cap Lanes:** {', '.join(over_cap_roles) if over_cap_roles else 'None'}\n"
-            f"**Role Penalty:** {role_penalty_total}\n"
-            f"**Top 2 Matchup:** Same role, opposite teams\n"
-            f"**Flexible Balancing:** Players can be moved off-role to protect lane balance\n"
-            f"**1800+ Rule:** Secondary role is treated as Fill\n"
-            f"**Waitlisted Players:** {len(waitlist_queue)}"
+            f"**Over-Cap Lanes:** {', '.join(over_cap_roles) if over_cap_roles else 'None'}"
         ),
         inline=False
     )
@@ -1231,6 +1227,7 @@ async def send_embed(ctx, title, description, color):
     await ctx.send(embed=embed)
 
 
+# Queue message builders and queue-post lifecycle.
 def add_queue_chunks(embed, title, lines, chunk_size=5):
     """
     Discord embed fields have size limits.
@@ -1381,6 +1378,7 @@ async def create_queue_message(channel, replace_existing=True):
     return msg
 
 
+# Betting helpers. Betting is attached to the main teams message, not a separate post.
 def format_coins(amount):
     return f"{int(amount):,}"
 
@@ -1411,6 +1409,9 @@ def betting_closes_timestamp(closes_at_text):
 
 
 async def update_betting_message(betting_id):
+    """
+    Refreshes the original teams message so the betting pools and buttons stay current.
+    """
     betting_match = get_betting_match(betting_id)
 
     if not betting_match:
@@ -1444,6 +1445,9 @@ async def update_betting_message(betting_id):
 
 
 async def close_betting_after_delay(betting_id, delay_seconds):
+    """
+    Background task started when teams are generated. It closes betting after the window.
+    """
     await asyncio.sleep(delay_seconds)
 
     betting_match = get_betting_match(betting_id)
@@ -1456,6 +1460,9 @@ async def close_betting_after_delay(betting_id, delay_seconds):
 
 
 async def open_betting_for_current_match(guild=None):
+    """
+    Creates the database betting match and attaches Bet Blue/Red buttons to the teams embed.
+    """
     global active_betting_id
 
     if not last_blue_team or not last_red_team:
@@ -1485,6 +1492,9 @@ async def open_betting_for_current_match(guild=None):
 
 
 async def refund_active_betting(reason="Betting refunded."):
+    """
+    Refunds the current betting match when teams change before a result is recorded.
+    """
     global active_betting_id
 
     if active_betting_id is None:
@@ -1498,6 +1508,9 @@ async def refund_active_betting(reason="Betting refunded."):
 
 
 async def settle_active_betting(winner):
+    """
+    Closes any open betting window, pays winners, and refreshes the teams message.
+    """
     global active_betting_id
 
     if active_betting_id is None:
@@ -1519,6 +1532,10 @@ async def settle_active_betting(winner):
 
 
 class BetAmountModal(discord.ui.Modal):
+    """
+    Modal shown after a user clicks Bet Blue or Bet Red.
+    It validates balance, minimum bet, and player-team restrictions.
+    """
     def __init__(self, betting_id, side):
         super().__init__(title=f"Bet on {side.capitalize()}")
         self.betting_id = betting_id
@@ -1606,6 +1623,9 @@ class BetAmountModal(discord.ui.Modal):
 
 
 class BettingView(discord.ui.View):
+    """
+    Button row attached to the teams message while betting is open.
+    """
     def __init__(self, betting_id):
         super().__init__(timeout=None)
         self.betting_id = betting_id
@@ -1620,6 +1640,7 @@ class BettingView(discord.ui.View):
 
 
 
+# Signup and role preference UI.
 class SignupView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=300)
@@ -1897,6 +1918,7 @@ class RoleChangeView(discord.ui.View):
         await self.save_if_valid(interaction)
 
 
+# Discord event handlers and player-facing profile/signup commands.
 @bot.event
 async def on_ready():
     setup_database()
@@ -2237,6 +2259,9 @@ async def addtestplayers(ctx):
 
 
 def refill_active_queue_from_waitlist():
+    """
+    Promotes waitlisted players until the active queue is full again.
+    """
     promoted = []
 
     while len(player_queue) < MAX_QUEUE_SIZE and waitlist_queue:
@@ -2249,6 +2274,10 @@ def refill_active_queue_from_waitlist():
 
 
 def clear_completed_game_players():
+    """
+    Removes the 10 players who just played from the active queue.
+    Waitlisted players are promoted separately after result handling.
+    """
     played_ids = set()
 
     for player in last_blue_team + last_red_team:
@@ -2259,6 +2288,10 @@ def clear_completed_game_players():
 
 
 def role_penalty(player, assigned_role, flexible_player_id=None):
+    """
+    Scores how painful it is to put one player on one role.
+    Lower is better. Avoided roles are treated as almost impossible.
+    """
     primary = player["primary_role"]
     secondary = player["secondary_role"]
     avoided_role = player.get("avoided_role", "None")
@@ -2296,6 +2329,10 @@ def role_penalty(player, assigned_role, flexible_player_id=None):
 
 
 def best_role_assignment(team, flexible_player_id=None, forced_roles=None):
+    """
+    Finds the lowest-penalty role layout for a fixed 5-player team.
+    It tries every assignment of the five League roles to those five players.
+    """
     best_assignment = None
     best_penalty = None
     forced_roles = forced_roles or {}
@@ -2333,6 +2370,9 @@ def best_role_assignment(team, flexible_player_id=None, forced_roles=None):
 
 
 def lane_balance_stats(blue_assigned, red_assigned):
+    """
+    Measures how fair each same-role lane matchup is after roles are assigned.
+    """
     lane_diff = 0
     max_lane_diff = 0
     over_cap_total = 0
@@ -2356,6 +2396,10 @@ def lane_balance_stats(blue_assigned, red_assigned):
 
 
 def matchmaking_score(rating_diff, lane_diff, over_cap_total, role_penalty_total):
+    """
+    Combines team rating, lane rating, over-cap lane gaps, and role fit into one score.
+    The lowest score wins.
+    """
     return (
         rating_diff * TEAM_RATING_DIFF_MULTIPLIER
         + lane_diff * LANE_TOTAL_DIFF_MULTIPLIER
@@ -2365,6 +2409,10 @@ def matchmaking_score(rating_diff, lane_diff, over_cap_total, role_penalty_total
 
 
 def find_balanced_teams(players):
+    """
+    Searches all 5v5 splits and keeps the lowest-scoring result.
+    The two highest-rated players are forced onto opposite teams.
+    """
     best_blue = None
     best_red = None
     best_score = None
@@ -3085,6 +3133,9 @@ class InteractionResultContext:
 
 
 class ResultView(discord.ui.View):
+    """
+    Blue/Red winner buttons posted in #match-history for staff result reporting.
+    """
     def __init__(self):
         super().__init__(timeout=None)
         self.result_recorded = False
@@ -3158,6 +3209,10 @@ class ResultView(discord.ui.View):
 
 @bot.command()
 async def teams(ctx):
+    """
+    Builds teams from the active queue, locks the queue, posts result buttons,
+    and opens betting on the same teams embed.
+    """
     global last_blue_team, last_red_team, queue_locked, last_teams_message_id, last_teams_channel_id
     global last_teams_embed_title, last_teams_embed_description
 
@@ -3195,6 +3250,10 @@ async def teams(ctx):
 
 @bot.command()
 async def swap(ctx, player_one_arg: str, player_two_arg: str):
+    """
+    Lets staff manually adjust generated teams.
+    Active bets are refunded because team membership or roles may change.
+    """
     global last_teams_message_id, last_teams_channel_id
     global last_teams_embed_title, last_teams_embed_description
 
@@ -3305,6 +3364,10 @@ def build_short_rating_formula(lobby_average, base_rating_change):
 
 @bot.command()
 async def result(ctx, winner: str):
+    """
+    Records the winner, updates ratings and streaks, settles betting,
+    awards coins, clears played users from queue, and prepares rollback data.
+    """
     global queue_locked, last_blue_team, last_red_team, last_teams_message_id, last_teams_channel_id, last_match_history_message_id, last_match_history_channel_id, last_result_rollback, active_betting_id
 
     if not await require_admin(ctx):
@@ -3562,6 +3625,10 @@ async def result(ctx, winner: str):
 
 @bot.command()
 async def rollback(ctx):
+    """
+    Reverses the most recent result recorded during this bot process.
+    Restores teams/queue state, rating changes, match history, betting, and coin rewards.
+    """
     global queue_locked, last_blue_team, last_red_team, last_teams_message_id, last_teams_channel_id
     global last_match_history_message_id, last_match_history_channel_id
     global player_queue, waitlist_queue, last_result_rollback, active_betting_id
