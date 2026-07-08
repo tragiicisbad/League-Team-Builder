@@ -2270,6 +2270,17 @@ async def profile(ctx, member: discord.Member = None):
     for role in ROLES:
         role_lines.append(f"{role_emoji(role)} **{role}:** {player['role_ratings'][role]}")
 
+    mayram_player = get_mayram_player(member.id)
+
+    if mayram_player:
+        mayram_rating = mayram_player["rating"]
+        mayram_wins = mayram_player["wins"]
+        mayram_losses = mayram_player["losses"]
+    else:
+        mayram_rating = MAYRAM_STARTING_RATING
+        mayram_wins = 0
+        mayram_losses = 0
+
     embed = discord.Embed(title=f"{player['name']}'s Profile", color=COLOR_PROFILE)
 
     calculated_overall = calculate_overall_from_selected_roles(player)
@@ -2279,6 +2290,11 @@ async def profile(ctx, member: discord.Member = None):
     embed.add_field(name="Overall Rating", value=str(calculated_overall), inline=True)
     embed.add_field(name="Record", value=f"{player['wins']}W / {player['losses']}L", inline=True)
     embed.add_field(name="Current Streak", value=streak_display(player.get("streak", 0)), inline=True)
+    embed.add_field(
+        name="ARAM Mayhem",
+        value=f"**Rating:** {mayram_rating}\n**Record:** {mayram_wins}W / {mayram_losses}L",
+        inline=True
+    )
     embed.add_field(
         name="Preferred Roles",
         value=(
