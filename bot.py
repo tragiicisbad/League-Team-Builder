@@ -827,6 +827,8 @@ last_match_history_channel_id = None
 last_result_rollback = None
 winrate_message_id = None
 active_betting_id = None
+mayram_queue_message_id = None
+mayram_queue_channel_id = None
 mayram_queue = {}
 last_mayram_blue_team = []
 last_mayram_red_team = []
@@ -1395,7 +1397,7 @@ def clean_mayram_player_line(index, player):
 def build_mayram_queue_embed():
     embed = discord.Embed(
         title=f"ARAM Mayhem Queue ({len(mayram_queue)}/{MAYRAM_QUEUE_SIZE})",
-        description=f"Use `!mayramqueue` to join. No roles required. New players start at **{MAYRAM_STARTING_RATING}** rating.",
+        description=f"React with {JOIN_EMOJI} to join. No roles required. New players start at **{MAYRAM_STARTING_RATING}** rating.",
         color=COLOR_QUEUE
     )
 
@@ -1583,6 +1585,71 @@ async def create_queue_message(channel, replace_existing=True):
         await msg.add_reaction(JOIN_EMOJI)
     except Exception as e:
         print(f"Could not add join reaction to queue message: {e}")
+
+    return msg
+
+
+async def update_mayram_queue_message():
+    if mayram_queue_message_id is None or mayram_queue_channel_id is None:
+        return
+
+    channel = bot.get_channel(mayram_queue_channel_id)
+    if channel is None:
+        return
+
+    try:
+        msg = await channel.fetch_message(mayram_queue_message_id)
+        await msg.edit(embed=build_mayram_queue_embed(), view=MayramQueueTeamsView())
+    except Exception as e:
+        print(f"Could not update ARAM Mayhem queue message: {e}")
+
+
+async def delete_mayram_queue_message():
+    global mayram_queue_message_id, mayram_queue_channel_id
+
+    if mayram_queue_message_id is None or mayram_queue_channel_id is None:
+        return None
+
+    channel = bot.get_channel(mayram_queue_channel_id)
+
+    if channel is None:
+        mayram_queue_message_id = None
+        mayram_queue_channel_id = None
+        return None
+
+    try:
+        msg = await channel.fetch_message(mayram_queue_message_id)
+        await msg.delete()
+    except discord.NotFound:
+        pass
+    except discord.Forbidden:
+        print("Could not delete ARAM Mayhem queue message: missing permissions.")
+    except Exception as e:
+        print(f"Could not delete ARAM Mayhem queue message: {e}")
+
+    mayram_queue_message_id = None
+    mayram_queue_channel_id = None
+
+    return channel
+
+
+async def create_mayram_queue_message(channel, replace_existing=True):
+    global mayram_queue_message_id, mayram_queue_channel_id
+
+    if channel is None:
+        return None
+
+    if replace_existing and mayram_queue_message_id is not None:
+        await delete_mayram_queue_message()
+
+    msg = await channel.send(embed=build_mayram_queue_embed(), view=MayramQueueTeamsView())
+    mayram_queue_message_id = msg.id
+    mayram_queue_channel_id = channel.id
+
+    try:
+        await msg.add_reaction(JOIN_EMOJI)
+    except Exception as e:
+        print(f"Could not add join reaction to ARAM Mayhem queue message: {e}")
 
     return msg
 
@@ -2342,9 +2409,6 @@ async def on_raw_reaction_add(payload):
     if payload.user_id == bot.user.id:
         return
 
-    if payload.message_id != queue_message_id:
-        return
-
     if str(payload.emoji) != JOIN_EMOJI:
         return
 
@@ -2352,6 +2416,32 @@ async def on_raw_reaction_add(payload):
     member = guild.get_member(payload.user_id)
 
     if member is None:
+        return
+
+    if payload.message_id == mayram_queue_message_id:
+        if payload.user_id in mayram_queue:
+            await update_mayram_queue_message()
+            return
+
+        if len(mayram_queue) >= MAYRAM_QUEUE_SIZE:
+            channel = bot.get_channel(payload.channel_id)
+            if channel:
+                await channel.send(
+                    embed=discord.Embed(
+                        title="ARAM Mayhem Queue Full",
+                        description=f"{member.mention}, the ARAM Mayhem queue is already full.",
+                        color=COLOR_WARNING
+                    )
+                )
+            await update_mayram_queue_message()
+            return
+
+        save_mayram_player(payload.user_id, member.display_name)
+        mayram_queue[payload.user_id] = get_mayram_player(payload.user_id)
+        await update_mayram_queue_message()
+        return
+
+    if payload.message_id != queue_message_id:
         return
 
     player = get_player(payload.user_id)
@@ -2393,10 +2483,15 @@ async def on_raw_reaction_remove(payload):
     if payload.user_id == bot.user.id:
         return
 
-    if payload.message_id != queue_message_id:
+    if str(payload.emoji) != JOIN_EMOJI:
         return
 
-    if str(payload.emoji) != JOIN_EMOJI:
+    if payload.message_id == mayram_queue_message_id:
+        mayram_queue.pop(payload.user_id, None)
+        await update_mayram_queue_message()
+        return
+
+    if payload.message_id != queue_message_id:
         return
 
     removed_from_active = False
@@ -2456,24 +2551,30 @@ async def waitlist(ctx):
 
 @bot.command()
 async def mayramqueue(ctx):
-    save_mayram_player(ctx.author.id, ctx.author.display_name)
-    player = get_mayram_player(ctx.author.id)
+    try:
+        await create_mayram_queue_message(ctx.channel, replace_existing=True)
 
-    if ctx.author.id in mayram_queue:
-        await ctx.send(embed=build_mayram_queue_embed(), view=MayramQueueTeamsView())
-        return
-
-    if len(mayram_queue) >= MAYRAM_QUEUE_SIZE:
-        await send_embed(
-            ctx,
-            "ARAM Mayhem Queue Full",
-            f"The ARAM Mayhem queue already has **{MAYRAM_QUEUE_SIZE}** players. Click **Generate Teams** on a queue embed.",
-            COLOR_WARNING
+        await ctx.send(
+            embed=discord.Embed(
+                title="ARAM Mayhem Queue Post Refreshed",
+                description="React with ✅ on the ARAM Mayhem queue post to join.",
+                color=COLOR_SUCCESS
+            ),
+            delete_after=8
         )
-        return
+    except Exception as e:
+        print(f"Mayram queuepost error: {e}")
 
-    mayram_queue[ctx.author.id] = player
-    await ctx.send(embed=build_mayram_queue_embed(), view=MayramQueueTeamsView())
+        await ctx.send(
+            embed=discord.Embed(
+                title="ARAM Mayhem Queue Post Error",
+                description=(
+                    "The bot could not create the ARAM Mayhem queue post. "
+                    "Check that it has permission to send messages, embed links, and add reactions in this channel."
+                ),
+                color=COLOR_ERROR
+            )
+        )
 
 
 @bot.command()
@@ -2484,7 +2585,8 @@ async def mayramleave(ctx):
         await send_embed(ctx, "Not Queued", "You are not currently in the ARAM Mayhem queue.", COLOR_WARNING)
         return
 
-    await ctx.send(embed=build_mayram_queue_embed(), view=MayramQueueTeamsView())
+    await update_mayram_queue_message()
+    await send_embed(ctx, "Left ARAM Mayhem Queue", "You were removed from the ARAM Mayhem queue.", COLOR_SUCCESS)
 
 
 @bot.command()
@@ -2497,8 +2599,9 @@ async def mayramclearqueue(ctx):
     mayram_queue.clear()
     last_mayram_blue_team = []
     last_mayram_red_team = []
+    await delete_mayram_queue_message()
 
-    await send_embed(ctx, "ARAM Mayhem Queue Cleared", "The ARAM Mayhem queue and active teams were cleared.", COLOR_SUCCESS)
+    await send_embed(ctx, "ARAM Mayhem Queue Cleared", "The ARAM Mayhem queue, queue post, and active teams were cleared.", COLOR_SUCCESS)
 
 
 @bot.command()
@@ -3993,6 +4096,8 @@ async def mayramresult(ctx, winner: str):
 
     for discord_id in played_ids:
         mayram_queue.pop(discord_id, None)
+
+    await update_mayram_queue_message()
 
     embed = discord.Embed(
         title=f"ARAM Mayhem Result - {winner.capitalize()} Wins",
