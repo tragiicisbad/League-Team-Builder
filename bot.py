@@ -21,6 +21,7 @@ from database import (
     drop_all_role_ratings_to_nearest_hundred,
     full_season_rollover,
     get_player_coin_balance,
+    reset_all_player_coins,
     add_coins,
     award_match_coin_rewards,
     get_coin_leaderboard,
@@ -836,6 +837,9 @@ mayram_queue_channel_id = None
 mayram_queue = {}
 last_mayram_blue_team = []
 last_mayram_red_team = []
+last_mayram_teams_message_id = None
+last_mayram_teams_channel_id = None
+active_mayram_betting_id = None
 mayram_test_mode = False
 persistent_views_registered = False
 
@@ -1554,7 +1558,35 @@ def build_mayram_teams_embed():
         inline=False
     )
 
-    embed.set_footer(text="Use !mayramresult blue or !mayramresult red after the game.")
+    betting_id = globals().get("active_mayram_betting_id")
+
+    if betting_id is not None:
+        betting_match = get_betting_match(betting_id)
+
+        if betting_match:
+            status = betting_match["status"]
+            status_text = {
+                "open": f"Open - closes {betting_closes_timestamp(betting_match['closes_at'])}",
+                "closed": "Closed - waiting for result",
+                "settled": f"Settled - {str(betting_match.get('winner', '')).capitalize()} won",
+                "refunded": "Refunded"
+            }.get(status, status.title())
+
+            total_pool = betting_match["blue_pool"] + betting_match["red_pool"]
+
+            embed.add_field(
+                name=f"Betting #{betting_match['id']}",
+                value=(
+                    f"**Status:** {status_text}\n"
+                    f"**Blue Pool:** {format_coins(betting_match['blue_pool'])} coins\n"
+                    f"**Red Pool:** {format_coins(betting_match['red_pool'])} coins\n"
+                    f"**Total Pot:** {format_coins(total_pool)} coins\n"
+                    f"**Minimum Bet:** {format_coins(MIN_BET_AMOUNT)} coins"
+                ),
+                inline=False
+            )
+
+    embed.set_footer(text="Bet with the buttons below. Result buttons are posted in #mayram.")
     return embed
 
 
@@ -1660,11 +1692,17 @@ async def clear_5v5_queue_state(refund_reason="Queue was cleared."):
 
 async def clear_mayram_queue_state():
     global last_mayram_blue_team, last_mayram_red_team, mayram_test_mode
+    global last_mayram_teams_message_id, last_mayram_teams_channel_id
 
+    refunded_bets = await refund_active_mayram_betting("ARAM Mayhem queue was cleared.")
     mayram_queue.clear()
     last_mayram_blue_team = []
     last_mayram_red_team = []
+    last_mayram_teams_message_id = None
+    last_mayram_teams_channel_id = None
     mayram_test_mode = False
+
+    return refunded_bets
 
 
 async def run_clear_queue_from_button(interaction, queue_name):
@@ -1685,10 +1723,10 @@ async def run_clear_queue_from_button(interaction, queue_name):
         return
 
     target_channel = bot.get_channel(mayram_queue_channel_id) if mayram_queue_channel_id else interaction.channel
-    await clear_mayram_queue_state()
+    refunded_bets = await clear_mayram_queue_state()
     await create_mayram_queue_message(target_channel, replace_existing=True)
     await interaction.followup.send(
-        "ARAM Mayhem queue cleared and refreshed.",
+        f"ARAM Mayhem queue cleared and refreshed. Refunded active bets: **{refunded_bets}**",
         ephemeral=True
     )
 
@@ -1929,7 +1967,7 @@ def betting_team_payload(team):
         {
             "discord_id": player["discord_id"],
             "name": player["name"],
-            "assigned_role": player["assigned_role"]
+            "assigned_role": player.get("assigned_role")
         }
         for player in team
     ]
@@ -1985,6 +2023,43 @@ async def update_betting_message(betting_id):
         return False
 
 
+async def update_mayram_betting_message(betting_id):
+    """
+    Refreshes the ARAM Mayhem teams message so its betting pools and buttons stay current.
+    """
+    betting_match = get_betting_match(betting_id)
+
+    if not betting_match:
+        return False
+
+    channel_id = betting_match.get("channel_id")
+    message_id = betting_match.get("message_id")
+
+    if not channel_id or not message_id:
+        return False
+
+    channel = bot.get_channel(channel_id)
+
+    if channel is None:
+        return False
+
+    try:
+        msg = await channel.fetch_message(message_id)
+        view = BettingView(betting_id) if betting_match["status"] == "open" else None
+        await msg.edit(embed=build_mayram_teams_embed(), view=view)
+        return True
+    except Exception as e:
+        print(f"Could not update ARAM Mayhem betting message: {e}")
+        return False
+
+
+async def update_any_betting_message(betting_id):
+    if betting_id == active_mayram_betting_id:
+        return await update_mayram_betting_message(betting_id)
+
+    return await update_betting_message(betting_id)
+
+
 async def close_betting_after_delay(betting_id, delay_seconds):
     """
     Background task started when teams are generated. It closes betting after the window.
@@ -1997,7 +2072,7 @@ async def close_betting_after_delay(betting_id, delay_seconds):
         return
 
     close_betting_match(betting_id)
-    await update_betting_message(betting_id)
+    await update_any_betting_message(betting_id)
 
 
 async def open_betting_for_current_match(guild=None):
@@ -2032,6 +2107,38 @@ async def open_betting_for_current_match(guild=None):
     return betting_id
 
 
+async def open_betting_for_current_mayram_match(guild=None):
+    """
+    Creates a betting match for the latest ARAM Mayhem teams message.
+    """
+    global active_mayram_betting_id
+
+    if not last_mayram_blue_team or not last_mayram_red_team:
+        return None
+
+    if last_mayram_teams_channel_id is None or last_mayram_teams_message_id is None:
+        print("Could not open ARAM Mayhem betting: teams message has not been posted yet.")
+        return None
+
+    closes_at = (datetime.now() + timedelta(seconds=BETTING_WINDOW_SECONDS)).isoformat(timespec="seconds")
+
+    betting_id = create_betting_match(
+        blue_team=betting_team_payload(last_mayram_blue_team),
+        red_team=betting_team_payload(last_mayram_red_team),
+        closes_at=closes_at,
+        channel_id=last_mayram_teams_channel_id,
+        message_id=last_mayram_teams_message_id
+    )
+
+    active_mayram_betting_id = betting_id
+
+    await update_mayram_betting_message(betting_id)
+
+    bot.loop.create_task(close_betting_after_delay(betting_id, BETTING_WINDOW_SECONDS))
+
+    return betting_id
+
+
 async def refund_active_betting(reason="Betting refunded."):
     """
     Refunds the current betting match when teams change before a result is recorded.
@@ -2044,6 +2151,22 @@ async def refund_active_betting(reason="Betting refunded."):
     refunded_count = refund_betting_match(active_betting_id)
     await update_betting_message(active_betting_id)
     active_betting_id = None
+
+    return refunded_count
+
+
+async def refund_active_mayram_betting(reason="Betting refunded."):
+    """
+    Refunds the current ARAM Mayhem betting match when teams are cleared or ignored.
+    """
+    global active_mayram_betting_id
+
+    if active_mayram_betting_id is None:
+        return 0
+
+    refunded_count = refund_betting_match(active_mayram_betting_id)
+    await update_mayram_betting_message(active_mayram_betting_id)
+    active_mayram_betting_id = None
 
     return refunded_count
 
@@ -2068,6 +2191,30 @@ async def settle_active_betting(winner):
 
     result = settle_betting_match(active_betting_id, winner)
     await update_betting_message(active_betting_id)
+
+    return result
+
+
+async def settle_active_mayram_betting(winner):
+    """
+    Closes any open ARAM Mayhem betting window, pays winners, and refreshes the teams message.
+    """
+    global active_mayram_betting_id
+
+    if active_mayram_betting_id is None:
+        return None
+
+    betting_match = get_betting_match(active_mayram_betting_id)
+
+    if not betting_match:
+        active_mayram_betting_id = None
+        return None
+
+    if betting_match["status"] == "open":
+        close_betting_match(active_mayram_betting_id)
+
+    result = settle_betting_match(active_mayram_betting_id, winner)
+    await update_mayram_betting_message(active_mayram_betting_id)
 
     return result
 
@@ -2106,7 +2253,7 @@ class BetAmountModal(discord.ui.Modal):
             closes_at = datetime.fromisoformat(betting_match["closes_at"])
             if datetime.now() >= closes_at:
                 close_betting_match(self.betting_id)
-                await update_betting_message(self.betting_id)
+                await update_any_betting_message(self.betting_id)
                 await interaction.response.send_message("Betting just closed for this match.", ephemeral=True)
                 return
         except Exception:
@@ -2154,8 +2301,7 @@ class BetAmountModal(discord.ui.Modal):
             await interaction.response.send_message(message, ephemeral=True)
             return
 
-        updated_match = get_betting_match(self.betting_id)
-        await update_betting_message(self.betting_id)
+        await update_any_betting_message(self.betting_id)
 
         await interaction.response.send_message(
             f"Bet placed: **{format_coins(amount)}** coins on **{self.side.capitalize()}**.",
@@ -2896,10 +3042,18 @@ async def mayramclearqueue(ctx):
     if not await require_admin(ctx):
         return
 
-    await clear_mayram_queue_state()
+    refunded_bets = await clear_mayram_queue_state()
     await delete_mayram_queue_message()
 
-    await send_embed(ctx, "ARAM Mayhem Queue Cleared", "The ARAM Mayhem queue, queue post, and active teams were cleared.", COLOR_SUCCESS)
+    await send_embed(
+        ctx,
+        "ARAM Mayhem Queue Cleared",
+        (
+            "The ARAM Mayhem queue, queue post, and active teams were cleared.\n"
+            f"Refunded active bets: **{refunded_bets}**"
+        ),
+        COLOR_SUCCESS
+    )
 
 
 @bot.command()
@@ -4005,6 +4159,7 @@ async def teams(ctx):
 @bot.command()
 async def mayramteams(ctx):
     global last_mayram_blue_team, last_mayram_red_team
+    global last_mayram_teams_message_id, last_mayram_teams_channel_id
 
     if len(mayram_queue) < MAYRAM_QUEUE_SIZE:
         await send_embed(
@@ -4018,11 +4173,19 @@ async def mayramteams(ctx):
     players = list(mayram_queue.values())[:MAYRAM_QUEUE_SIZE]
     blue_team, red_team, rating_diff = find_balanced_mayram_teams(players)
 
+    await refund_active_mayram_betting("ARAM Mayhem teams were regenerated.")
+
     last_mayram_blue_team = blue_team
     last_mayram_red_team = red_team
 
-    await ctx.send(embed=build_mayram_teams_embed())
+    msg = await ctx.send(embed=build_mayram_teams_embed())
+    last_mayram_teams_message_id = msg.id
+    last_mayram_teams_channel_id = ctx.channel.id
+
     await post_mayram_teams_to_channel(ctx.guild)
+
+    if not mayram_test_mode:
+        await open_betting_for_current_mayram_match(ctx.guild)
 
 
 @bot.command()
@@ -4365,7 +4528,7 @@ async def result(ctx, winner: str):
         name="Coin Rewards",
         value=(
             f"Players in match: **+30,000** coins each\n"
-            f"Other signed-up players: **+5,000** coins each\n"
+            f"Other signed-up players: **+1,000** coins each\n"
             f"Rewarded: **{len(played_ids)}** players + **{signed_count}** signed-up players"
         ),
         inline=False
@@ -4427,6 +4590,7 @@ async def result(ctx, winner: str):
 @bot.command()
 async def mayramresult(ctx, winner: str):
     global last_mayram_blue_team, last_mayram_red_team, mayram_test_mode
+    global last_mayram_teams_message_id, last_mayram_teams_channel_id, active_mayram_betting_id
 
     if not await require_admin(ctx):
         return
@@ -4446,16 +4610,19 @@ async def mayramresult(ctx, winner: str):
             if player["discord_id"] >= 990000:
                 mayram_queue.pop(player["discord_id"], None)
 
+        await refund_active_mayram_betting("ARAM Mayhem test result was recorded.")
         await update_mayram_queue_message()
 
         last_mayram_blue_team = []
         last_mayram_red_team = []
+        last_mayram_teams_message_id = None
+        last_mayram_teams_channel_id = None
         mayram_test_mode = False
 
         await send_embed(
             ctx,
             "ARAM Mayhem Test Result Ignored",
-            "This was a test-filled queue, so no ARAM Mayhem ratings or match history were changed.",
+            "This was a test-filled queue, so no ARAM Mayhem ratings, coins, betting, or match history were changed.",
             COLOR_WARNING
         )
         return
@@ -4485,7 +4652,10 @@ async def mayramresult(ctx, winner: str):
         rating_change=MAYRAM_RATING_CHANGE
     )
 
+    betting_result = await settle_active_mayram_betting(winner)
+
     played_ids = {player["discord_id"] for player in last_mayram_blue_team + last_mayram_red_team}
+    coin_rewards = award_match_coin_rewards(played_ids)
 
     for discord_id in played_ids:
         mayram_queue.pop(discord_id, None)
@@ -4515,8 +4685,33 @@ async def mayramresult(ctx, winner: str):
         inline=False
     )
 
+    if betting_result and betting_result.get("settled"):
+        embed.add_field(
+            name="Betting",
+            value=(
+                f"Total Pot: **{format_coins(betting_result.get('total_pool', 0))}** coins\n"
+                f"Winner Pool: **{format_coins(betting_result.get('winning_pool', 0))}** coins\n"
+                f"Payouts: **{len(betting_result.get('payouts', []))}**"
+            ),
+            inline=False
+        )
+
+    signed_count = len(coin_rewards) - len(played_ids)
+    embed.add_field(
+        name="Coin Rewards",
+        value=(
+            f"Players in match: **+30,000** coins each\n"
+            f"Other signed-up players: **+1,000** coins each\n"
+            f"Rewarded: **{len(played_ids)}** players + **{signed_count}** signed-up players"
+        ),
+        inline=False
+    )
+
     last_mayram_blue_team = []
     last_mayram_red_team = []
+    last_mayram_teams_message_id = None
+    last_mayram_teams_channel_id = None
+    active_mayram_betting_id = None
 
     await ctx.send(embed=embed)
 
@@ -4646,6 +4841,27 @@ async def coins(ctx, member: discord.Member = None):
         ctx,
         "Coin Balance",
         f"**{member.display_name}** has **{format_coins(player.get('coins', 0))}** coins.",
+        COLOR_SUCCESS
+    )
+
+
+@bot.command()
+async def resetcoins(ctx):
+    if not await require_admin(ctx):
+        return
+
+    refunded_5v5 = await refund_active_betting("Coin balances were reset.")
+    refunded_mayram = await refund_active_mayram_betting("Coin balances were reset.")
+    reset_count = reset_all_player_coins()
+
+    await send_embed(
+        ctx,
+        "Coins Reset",
+        (
+            f"Reset coin balances for **{reset_count}** players.\n"
+            f"Refunded active 5v5 bets: **{refunded_5v5}**\n"
+            f"Refunded active ARAM Mayhem bets: **{refunded_mayram}**"
+        ),
         COLOR_SUCCESS
     )
 

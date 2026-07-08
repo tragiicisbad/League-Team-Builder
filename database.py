@@ -604,6 +604,22 @@ def get_player_coin_balance(discord_id):
     return row[0] or 0
 
 
+def reset_all_player_coins():
+    conn = connect()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        UPDATE players
+        SET coins = 0
+    """)
+
+    rows_changed = cursor.rowcount
+    conn.commit()
+    conn.close()
+
+    return rows_changed
+
+
 def add_coins(discord_id, amount):
     conn = connect()
     cursor = conn.cursor()
@@ -621,7 +637,7 @@ def add_coins(discord_id, amount):
     return rows_changed > 0
 
 
-def award_match_coin_rewards(played_ids, signed_reward=5000, played_reward=30000):
+def award_match_coin_rewards(played_ids, signed_reward=1000, played_reward=30000):
     """
     Awards participation coins after a match.
     Players in the match get the larger reward; all other signed-up players get the smaller one.
