@@ -32,7 +32,12 @@ from database import (
     settle_betting_match,
     rollback_betting_settlement,
     refund_betting_match,
-    get_bet_history
+    get_bet_history,
+    save_mayram_player,
+    get_mayram_player,
+    update_mayram_player_after_match,
+    save_mayram_match,
+    get_mayram_leaderboard
 )
 
 
@@ -63,6 +68,9 @@ RANK_ROLE_NAMES = [
     "Master", "Grandmaster", "Challenger"
 ]
 MAX_QUEUE_SIZE = 10
+MAYRAM_QUEUE_SIZE = 10
+MAYRAM_STARTING_RATING = 1000
+MAYRAM_RATING_CHANGE = 50
 BASE_RATING_CHANGE = 30
 MIN_RATING_CHANGE = 30
 MAX_RATING_CHANGE = 50
@@ -819,6 +827,10 @@ last_match_history_channel_id = None
 last_result_rollback = None
 winrate_message_id = None
 active_betting_id = None
+mayram_queue = {}
+last_mayram_blue_team = []
+last_mayram_red_team = []
+persistent_views_registered = False
 
 
 # Permission helpers.
@@ -1368,8 +1380,146 @@ def build_queue_embed():
     else:
         embed.add_field(name="Waitlist", value="No players waiting.", inline=False)
 
-    embed.set_footer(text="Use !teams when 10 players are active. After !result, a fresh queue post is created.")
+    embed.set_footer(text="Click Generate Teams when 10 players are active. After !result, a fresh queue post is created.")
     return embed
+
+
+def clean_mayram_player_line(index, player):
+    games_played = player["wins"] + player["losses"]
+    return (
+        f"**#{index}** **{player['name']}**  •  "
+        f"`{player['rating']}` rating  •  `{player['wins']}W - {player['losses']}L`  •  `{games_played} GP`"
+    )
+
+
+def build_mayram_queue_embed():
+    embed = discord.Embed(
+        title=f"ARAM Mayhem Queue ({len(mayram_queue)}/{MAYRAM_QUEUE_SIZE})",
+        description=f"Use `!mayramqueue` to join. No roles required. New players start at **{MAYRAM_STARTING_RATING}** rating.",
+        color=COLOR_QUEUE
+    )
+
+    if not mayram_queue:
+        embed.add_field(name="Queued Players", value="No players queued yet.", inline=False)
+    else:
+        lines = [
+            clean_mayram_player_line(index, player)
+            for index, player in enumerate(mayram_queue.values(), start=1)
+        ]
+
+        add_queue_chunks(
+            embed,
+            f"Queued Players ({len(mayram_queue)}/{MAYRAM_QUEUE_SIZE})",
+            lines,
+            chunk_size=5
+        )
+
+        ratings = [player["rating"] for player in mayram_queue.values()]
+        embed.add_field(
+            name="Queue Stats",
+            value=(
+                f"**Avg:** {round(sum(ratings) / len(ratings))}  •  "
+                f"**High:** {max(ratings)}  •  "
+                f"**Low:** {min(ratings)}"
+            ),
+            inline=False
+        )
+
+    embed.set_footer(text="Click Generate Teams when 10 players are queued.")
+    return embed
+
+
+def find_balanced_mayram_teams(players):
+    best_blue = None
+    best_red = None
+    best_diff = None
+
+    for blue_group in itertools.combinations(players, MAYRAM_QUEUE_SIZE // 2):
+        red_group = [player for player in players if player not in blue_group]
+        blue_total = sum(player["rating"] for player in blue_group)
+        red_total = sum(player["rating"] for player in red_group)
+        diff = abs(blue_total - red_total)
+
+        if best_diff is None or diff < best_diff:
+            best_blue = list(blue_group)
+            best_red = red_group
+            best_diff = diff
+
+    return best_blue, best_red, best_diff
+
+
+def mayram_team_lines(team):
+    return "\n".join(
+        f"**{player['name']}**  •  `{player['rating']}` rating"
+        for player in team
+    )
+
+
+def build_mayram_teams_embed():
+    blue_total = sum(player["rating"] for player in last_mayram_blue_team)
+    red_total = sum(player["rating"] for player in last_mayram_red_team)
+    diff = abs(blue_total - red_total)
+
+    embed = discord.Embed(
+        title="ARAM Mayhem Teams Generated",
+        color=COLOR_SUCCESS
+    )
+
+    embed.add_field(
+        name=f"Blue Team - {blue_total} Rating",
+        value=mayram_team_lines(last_mayram_blue_team),
+        inline=True
+    )
+
+    embed.add_field(
+        name=f"Red Team - {red_total} Rating",
+        value=mayram_team_lines(last_mayram_red_team),
+        inline=True
+    )
+
+    embed.add_field(
+        name="Balance Stats",
+        value=f"**Team Rating Difference:** {diff}",
+        inline=False
+    )
+
+    embed.set_footer(text="Use !mayramresult blue or !mayramresult red after the game.")
+    return embed
+
+
+async def run_command_from_button(interaction, command_name, *args):
+    if not is_admin_member(interaction.user):
+        await interaction.response.send_message("Only staff can generate teams.", ephemeral=True)
+        return
+
+    command = bot.get_command(command_name)
+
+    if command is None:
+        await interaction.response.send_message("That team command could not be found.", ephemeral=True)
+        return
+
+    await interaction.response.defer()
+    ctx = InteractionResultContext(interaction)
+    await command.callback(ctx, *args)
+
+
+class QueueTeamsView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Generate Teams", style=discord.ButtonStyle.success, custom_id="queue_generate_teams")
+    async def generate_teams(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await run_command_from_button(interaction, "teams")
+
+
+class MayramQueueTeamsView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Generate Teams", style=discord.ButtonStyle.success, custom_id="mayram_queue_generate_teams")
+    async def generate_teams(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await run_command_from_button(interaction, "mayramteams")
+
 
 async def update_queue_message():
     if queue_message_id is None or queue_channel_id is None:
@@ -1381,7 +1531,7 @@ async def update_queue_message():
 
     try:
         msg = await channel.fetch_message(queue_message_id)
-        await msg.edit(embed=build_queue_embed())
+        await msg.edit(embed=build_queue_embed(), view=QueueTeamsView())
     except Exception as e:
         print(f"Could not update queue message: {e}")
 
@@ -1425,7 +1575,7 @@ async def create_queue_message(channel, replace_existing=True):
     if replace_existing and queue_message_id is not None:
         await delete_queue_message()
 
-    msg = await channel.send(embed=build_queue_embed())
+    msg = await channel.send(embed=build_queue_embed(), view=QueueTeamsView())
     queue_message_id = msg.id
     queue_channel_id = channel.id
 
@@ -1980,7 +2130,14 @@ class RoleChangeView(discord.ui.View):
 # Discord event handlers and player-facing profile/signup commands.
 @bot.event
 async def on_ready():
+    global persistent_views_registered
+
     setup_database()
+
+    if not persistent_views_registered:
+        bot.add_view(QueueTeamsView())
+        bot.add_view(MayramQueueTeamsView())
+        persistent_views_registered = True
 
     try:
         for guild in bot.guilds:
@@ -2258,7 +2415,7 @@ async def on_raw_reaction_remove(payload):
 
 @bot.command(name="queue")
 async def show_queue(ctx):
-    await ctx.send(embed=build_queue_embed())
+    await ctx.send(embed=build_queue_embed(), view=QueueTeamsView())
 
 
 @bot.command()
@@ -2279,6 +2436,53 @@ async def waitlist(ctx):
     )
 
     await ctx.send(embed=embed)
+
+
+@bot.command()
+async def mayramqueue(ctx):
+    save_mayram_player(ctx.author.id, ctx.author.display_name)
+    player = get_mayram_player(ctx.author.id)
+
+    if ctx.author.id in mayram_queue:
+        await ctx.send(embed=build_mayram_queue_embed(), view=MayramQueueTeamsView())
+        return
+
+    if len(mayram_queue) >= MAYRAM_QUEUE_SIZE:
+        await send_embed(
+            ctx,
+            "ARAM Mayhem Queue Full",
+            f"The ARAM Mayhem queue already has **{MAYRAM_QUEUE_SIZE}** players. Click **Generate Teams** on a queue embed.",
+            COLOR_WARNING
+        )
+        return
+
+    mayram_queue[ctx.author.id] = player
+    await ctx.send(embed=build_mayram_queue_embed(), view=MayramQueueTeamsView())
+
+
+@bot.command()
+async def mayramleave(ctx):
+    removed = mayram_queue.pop(ctx.author.id, None)
+
+    if not removed:
+        await send_embed(ctx, "Not Queued", "You are not currently in the ARAM Mayhem queue.", COLOR_WARNING)
+        return
+
+    await ctx.send(embed=build_mayram_queue_embed(), view=MayramQueueTeamsView())
+
+
+@bot.command()
+async def mayramclearqueue(ctx):
+    global last_mayram_blue_team, last_mayram_red_team
+
+    if not await require_admin(ctx):
+        return
+
+    mayram_queue.clear()
+    last_mayram_blue_team = []
+    last_mayram_red_team = []
+
+    await send_embed(ctx, "ARAM Mayhem Queue Cleared", "The ARAM Mayhem queue and active teams were cleared.", COLOR_SUCCESS)
 
 
 @bot.command()
@@ -3331,6 +3535,28 @@ async def teams(ctx):
 
 
 @bot.command()
+async def mayramteams(ctx):
+    global last_mayram_blue_team, last_mayram_red_team
+
+    if len(mayram_queue) < MAYRAM_QUEUE_SIZE:
+        await send_embed(
+            ctx,
+            "Not Enough ARAM Mayhem Players",
+            f"Need exactly **{MAYRAM_QUEUE_SIZE}** players. Current queue: **{len(mayram_queue)}/{MAYRAM_QUEUE_SIZE}**.",
+            COLOR_WARNING
+        )
+        return
+
+    players = list(mayram_queue.values())[:MAYRAM_QUEUE_SIZE]
+    blue_team, red_team, rating_diff = find_balanced_mayram_teams(players)
+
+    last_mayram_blue_team = blue_team
+    last_mayram_red_team = red_team
+
+    await ctx.send(embed=build_mayram_teams_embed())
+
+
+@bot.command()
 async def swap(ctx, player_one_arg: str, player_two_arg: str):
     """
     Lets staff manually adjust generated teams.
@@ -3706,6 +3932,82 @@ async def result(ctx, winner: str):
 
 
 @bot.command()
+async def mayramresult(ctx, winner: str):
+    global last_mayram_blue_team, last_mayram_red_team
+
+    if not await require_admin(ctx):
+        return
+
+    winner = winner.lower()
+
+    if winner not in ["blue", "red"]:
+        await send_embed(ctx, "Invalid Result", "Use `!mayramresult blue` or `!mayramresult red`.", COLOR_ERROR)
+        return
+
+    if not last_mayram_blue_team or not last_mayram_red_team:
+        await send_embed(ctx, "No ARAM Mayhem Teams", "Use `!mayramteams` before recording a result.", COLOR_WARNING)
+        return
+
+    blue_rating = sum(player["rating"] for player in last_mayram_blue_team)
+    red_rating = sum(player["rating"] for player in last_mayram_red_team)
+
+    if winner == "blue":
+        winning_team = last_mayram_blue_team
+        losing_team = last_mayram_red_team
+    else:
+        winning_team = last_mayram_red_team
+        losing_team = last_mayram_blue_team
+
+    for player in winning_team:
+        update_mayram_player_after_match(player["discord_id"], won=True, rating_change=MAYRAM_RATING_CHANGE)
+
+    for player in losing_team:
+        update_mayram_player_after_match(player["discord_id"], won=False, rating_change=MAYRAM_RATING_CHANGE)
+
+    save_mayram_match(
+        winner=winner,
+        blue_team=[player["name"] for player in last_mayram_blue_team],
+        red_team=[player["name"] for player in last_mayram_red_team],
+        blue_rating=blue_rating,
+        red_rating=red_rating,
+        rating_change=MAYRAM_RATING_CHANGE
+    )
+
+    played_ids = {player["discord_id"] for player in last_mayram_blue_team + last_mayram_red_team}
+
+    for discord_id in played_ids:
+        mayram_queue.pop(discord_id, None)
+
+    embed = discord.Embed(
+        title=f"ARAM Mayhem Result - {winner.capitalize()} Wins",
+        color=COLOR_BLUE_TEAM if winner == "blue" else COLOR_RED_TEAM
+    )
+
+    embed.add_field(
+        name="Winner Changes",
+        value="\n".join(f"**{player['name']}** `+{MAYRAM_RATING_CHANGE}`" for player in winning_team),
+        inline=True
+    )
+
+    embed.add_field(
+        name="Loser Changes",
+        value="\n".join(f"**{player['name']}** `-{MAYRAM_RATING_CHANGE}`" for player in losing_team),
+        inline=True
+    )
+
+    embed.add_field(
+        name="Queue Updated",
+        value="Played users were removed from the ARAM Mayhem queue.",
+        inline=False
+    )
+
+    last_mayram_blue_team = []
+    last_mayram_red_team = []
+
+    await ctx.send(embed=embed)
+
+
+@bot.command()
 async def rollback(ctx):
     """
     Reverses the most recent result recorded during this bot process.
@@ -3860,6 +4162,38 @@ async def coinleaderboard(ctx, page: int = 1):
     )
 
     embed.set_footer(text=f"Use !coinleaderboard {page + 1} for the next page.")
+    await ctx.send(embed=embed)
+
+
+@bot.command()
+async def mayramleaderboard(ctx, page: int = 1):
+    if page < 1:
+        page = 1
+
+    per_page = 10
+    offset = (page - 1) * per_page
+    rows = get_mayram_leaderboard(per_page, offset)
+
+    if not rows:
+        await send_embed(ctx, "ARAM Mayhem Leaderboard", f"No players found on page {page}.", COLOR_WARNING)
+        return
+
+    lines = []
+
+    for index, (name, rating, wins, losses) in enumerate(rows, start=offset + 1):
+        games_played = wins + losses
+        medal = "🥇" if index == 1 else "🥈" if index == 2 else "🥉" if index == 3 else f"**#{index}**"
+        lines.append(
+            f"{medal} **{name}** - `{rating}` rating  •  `{wins}W - {losses}L`  •  `{games_played} GP`"
+        )
+
+    embed = discord.Embed(
+        title=f"ARAM Mayhem Leaderboard - Page {page}",
+        description="\n".join(lines),
+        color=COLOR_PROFILE
+    )
+
+    embed.set_footer(text=f"Use !mayramleaderboard {page + 1} for the next page.")
     await ctx.send(embed=embed)
 
 

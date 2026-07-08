@@ -172,6 +172,29 @@ def setup_database():
     )
     """)
 
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS mayram_players (
+        discord_id BIGINT PRIMARY KEY,
+        name TEXT NOT NULL,
+        rating INTEGER NOT NULL DEFAULT 1000,
+        wins INTEGER DEFAULT 0,
+        losses INTEGER DEFAULT 0
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS mayram_matches (
+        id SERIAL PRIMARY KEY,
+        date_played TEXT NOT NULL,
+        winner TEXT NOT NULL,
+        blue_team TEXT NOT NULL,
+        red_team TEXT NOT NULL,
+        blue_rating INTEGER NOT NULL,
+        red_rating INTEGER NOT NULL,
+        rating_change INTEGER NOT NULL
+    )
+    """)
+
     conn.commit()
     conn.close()
 
@@ -1140,6 +1163,115 @@ def get_bet_history(discord_id, limit=10):
 
     return rows
 
+
+
+def save_mayram_player(discord_id, name):
+    conn = connect()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        INSERT INTO mayram_players (discord_id, name, rating, wins, losses)
+        VALUES (%s, %s, 1000, 0, 0)
+        ON CONFLICT(discord_id) DO UPDATE SET
+            name = EXCLUDED.name
+    """, (discord_id, name))
+
+    conn.commit()
+    conn.close()
+
+
+def get_mayram_player(discord_id):
+    conn = connect()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT discord_id, name, rating, wins, losses
+        FROM mayram_players
+        WHERE discord_id = %s
+    """, (discord_id,))
+
+    row = cursor.fetchone()
+    conn.close()
+
+    if not row:
+        return None
+
+    return {
+        "discord_id": row[0],
+        "name": row[1],
+        "rating": row[2],
+        "wins": row[3],
+        "losses": row[4]
+    }
+
+
+def update_mayram_player_after_match(discord_id, won, rating_change=50):
+    delta = rating_change if won else -rating_change
+
+    conn = connect()
+    cursor = conn.cursor()
+
+    if won:
+        cursor.execute("""
+            UPDATE mayram_players
+            SET rating = rating + %s,
+                wins = wins + 1
+            WHERE discord_id = %s
+        """, (delta, discord_id))
+    else:
+        cursor.execute("""
+            UPDATE mayram_players
+            SET rating = rating + %s,
+                losses = losses + 1
+            WHERE discord_id = %s
+        """, (delta, discord_id))
+
+    rows_changed = cursor.rowcount
+    conn.commit()
+    conn.close()
+
+    return rows_changed > 0
+
+
+def save_mayram_match(winner, blue_team, red_team, blue_rating, red_rating, rating_change=50):
+    conn = connect()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        INSERT INTO mayram_matches (
+            date_played, winner, blue_team, red_team,
+            blue_rating, red_rating, rating_change
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+    """, (
+        datetime.now().strftime("%Y-%m-%d %H:%M"),
+        winner,
+        json.dumps(blue_team),
+        json.dumps(red_team),
+        blue_rating,
+        red_rating,
+        rating_change
+    ))
+
+    conn.commit()
+    conn.close()
+
+
+def get_mayram_leaderboard(limit=10, offset=0):
+    conn = connect()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT name, rating, wins, losses
+        FROM mayram_players
+        ORDER BY rating DESC, wins DESC, name ASC
+        LIMIT %s OFFSET %s
+    """, (limit, offset))
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    return rows
 
 
 def get_leaderboard(limit=10, offset=0):
