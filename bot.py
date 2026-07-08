@@ -56,6 +56,7 @@ JOIN_EMOJI = "✅"
 STAFF_ROLE_NAMES = ["Customs Admin", "Moderator"]
 PROMOTION_CHANNEL_NAME = "general"
 MATCH_HISTORY_CHANNEL_NAME = "match-history"
+MAYRAM_CHANNEL_NAME = "mayram"
 WINRATE_CHANNEL_NAME = "winrates"
 BETTING_WINDOW_SECONDS = 180
 MIN_BET_AMOUNT = 1000
@@ -827,11 +828,13 @@ last_match_history_channel_id = None
 last_result_rollback = None
 winrate_message_id = None
 active_betting_id = None
+queue_test_mode = False
 mayram_queue_message_id = None
 mayram_queue_channel_id = None
 mayram_queue = {}
 last_mayram_blue_team = []
 last_mayram_red_team = []
+mayram_test_mode = False
 persistent_views_registered = False
 
 
@@ -1201,6 +1204,41 @@ async def post_generated_teams_to_match_history(guild):
     last_match_history_channel_id = channel.id
 
 
+def build_mayram_result_embed(title="ARAM Mayhem Match Generated", description="Admins can report the winner using the buttons below."):
+    embed = discord.Embed(
+        title=title,
+        description=description,
+        color=COLOR_QUEUE
+    )
+
+    embed.add_field(
+        name="Blue Team",
+        value=mayram_team_lines(last_mayram_blue_team),
+        inline=True
+    )
+
+    embed.add_field(
+        name="Red Team",
+        value=mayram_team_lines(last_mayram_red_team),
+        inline=True
+    )
+
+    return embed
+
+
+async def post_mayram_teams_to_channel(guild):
+    if guild is None:
+        return
+
+    channel = discord.utils.get(guild.text_channels, name=MAYRAM_CHANNEL_NAME)
+
+    if channel is None:
+        print(f"Could not find #{MAYRAM_CHANNEL_NAME} channel.")
+        return
+
+    await channel.send(embed=build_mayram_result_embed(), view=MayramResultView())
+
+
 async def update_match_history_teams_message(title="Teams Shuffled", description="Admins can report the winner using the buttons below."):
     if last_match_history_message_id is None or last_match_history_channel_id is None:
         return False
@@ -1489,6 +1527,86 @@ def build_mayram_teams_embed():
     return embed
 
 
+def fill_queue_with_test_players():
+    global queue_test_mode
+
+    test_players = [
+        {"discord_id": 900001, "name": "TestTop", "rank": "Gold", "rating": 1250, "role_ratings": {"Top": 1250, "Jungle": 1000, "Mid": 1150, "ADC": 1000, "Support": 1000}, "primary_role": "Top", "secondary_role": "Mid", "wins": 0, "losses": 0, "streak": 0},
+        {"discord_id": 900002, "name": "TestJungle", "rank": "Silver", "rating": 1100, "role_ratings": {"Top": 850, "Jungle": 1100, "Mid": 850, "ADC": 850, "Support": 1000}, "primary_role": "Jungle", "secondary_role": "Support", "wins": 0, "losses": 0, "streak": 0},
+        {"discord_id": 900003, "name": "TestMid", "rank": "Platinum", "rating": 1400, "role_ratings": {"Top": 1150, "Jungle": 1150, "Mid": 1400, "ADC": 1300, "Support": 1150}, "primary_role": "Mid", "secondary_role": "ADC", "wins": 0, "losses": 0, "streak": 0},
+        {"discord_id": 900004, "name": "TestADC", "rank": "Bronze", "rating": 950, "role_ratings": {"Top": 700, "Jungle": 700, "Mid": 700, "ADC": 950, "Support": 850}, "primary_role": "ADC", "secondary_role": "Support", "wins": 0, "losses": 0, "streak": 0},
+        {"discord_id": 900005, "name": "TestSupport", "rank": "Emerald", "rating": 1550, "role_ratings": {"Top": 1300, "Jungle": 1450, "Mid": 1300, "ADC": 1300, "Support": 1550}, "primary_role": "Support", "secondary_role": "Jungle", "wins": 0, "losses": 0, "streak": 0},
+        {"discord_id": 900006, "name": "TestFill1", "rank": "Iron", "rating": 800, "role_ratings": {"Top": 800, "Jungle": 800, "Mid": 800, "ADC": 800, "Support": 800}, "primary_role": "Fill", "secondary_role": "Top", "wins": 0, "losses": 0, "streak": 0},
+        {"discord_id": 900007, "name": "TestFill2", "rank": "Diamond", "rating": 1700, "role_ratings": {"Top": 1700, "Jungle": 1600, "Mid": 1450, "ADC": 1450, "Support": 1450}, "primary_role": "Top", "secondary_role": "Jungle", "wins": 0, "losses": 0, "streak": 0},
+        {"discord_id": 900008, "name": "TestFill3", "rank": "Gold", "rating": 1250, "role_ratings": {"Top": 1000, "Jungle": 1000, "Mid": 1250, "ADC": 1000, "Support": 1150}, "primary_role": "Mid", "secondary_role": "Support", "wins": 0, "losses": 0, "streak": 0},
+        {"discord_id": 900009, "name": "TestFill4", "rank": "Silver", "rating": 1100, "role_ratings": {"Top": 1000, "Jungle": 850, "Mid": 850, "ADC": 1100, "Support": 850}, "primary_role": "ADC", "secondary_role": "Top", "wins": 0, "losses": 0, "streak": 0},
+        {"discord_id": 900010, "name": "TestFill5", "rank": "Gold", "rating": 1250, "role_ratings": {"Top": 1150, "Jungle": 1150, "Mid": 1150, "ADC": 1150, "Support": 1250}, "primary_role": "Support", "secondary_role": "Fill", "wins": 0, "losses": 0, "streak": 0}
+    ]
+
+    added = 0
+
+    for player in test_players:
+        if len(player_queue) >= MAX_QUEUE_SIZE:
+            break
+        if player["discord_id"] in player_queue:
+            continue
+
+        player_queue[player["discord_id"]] = player
+        added += 1
+
+    if added:
+        queue_test_mode = True
+
+    return added
+
+
+def fill_mayram_queue_with_test_players():
+    global mayram_test_mode
+
+    added = 0
+
+    for index in range(1, MAYRAM_QUEUE_SIZE + 1):
+        if len(mayram_queue) >= MAYRAM_QUEUE_SIZE:
+            break
+
+        discord_id = 990000 + index
+
+        if discord_id in mayram_queue:
+            continue
+
+        mayram_queue[discord_id] = {
+            "discord_id": discord_id,
+            "name": f"MayramTest{index}",
+            "rating": MAYRAM_STARTING_RATING,
+            "wins": 0,
+            "losses": 0
+        }
+        added += 1
+
+    if added:
+        mayram_test_mode = True
+
+    return added
+
+
+async def run_test_fill_from_button(interaction, queue_name):
+    if not is_admin_member(interaction.user):
+        await interaction.response.send_message("Only staff can use test fill.", ephemeral=True)
+        return
+
+    if queue_name == "5v5":
+        added = fill_queue_with_test_players()
+        await update_queue_message()
+    else:
+        added = fill_mayram_queue_with_test_players()
+        await update_mayram_queue_message()
+
+    await interaction.response.send_message(
+        f"Added **{added}** test players. This queue is now in test mode and will not count results.",
+        ephemeral=True
+    )
+
+
 async def run_command_from_button(interaction, command_name, *args):
     if not is_admin_member(interaction.user):
         await interaction.response.send_message("Only staff can generate teams.", ephemeral=True)
@@ -1513,6 +1631,10 @@ class QueueTeamsView(discord.ui.View):
     async def generate_teams(self, interaction: discord.Interaction, button: discord.ui.Button):
         await run_command_from_button(interaction, "teams")
 
+    @discord.ui.button(label="Test", style=discord.ButtonStyle.secondary, custom_id="queue_test_fill")
+    async def test_fill(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await run_test_fill_from_button(interaction, "5v5")
+
 
 class MayramQueueTeamsView(discord.ui.View):
     def __init__(self):
@@ -1521,6 +1643,10 @@ class MayramQueueTeamsView(discord.ui.View):
     @discord.ui.button(label="Generate Teams", style=discord.ButtonStyle.success, custom_id="mayram_queue_generate_teams")
     async def generate_teams(self, interaction: discord.Interaction, button: discord.ui.Button):
         await run_command_from_button(interaction, "mayramteams")
+
+    @discord.ui.button(label="Test", style=discord.ButtonStyle.secondary, custom_id="mayram_queue_test_fill")
+    async def test_fill(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await run_test_fill_from_button(interaction, "mayram")
 
 
 async def update_queue_message():
@@ -2591,7 +2717,7 @@ async def mayramleave(ctx):
 
 @bot.command()
 async def mayramclearqueue(ctx):
-    global last_mayram_blue_team, last_mayram_red_team
+    global last_mayram_blue_team, last_mayram_red_team, mayram_test_mode
 
     if not await require_admin(ctx):
         return
@@ -2599,6 +2725,7 @@ async def mayramclearqueue(ctx):
     mayram_queue.clear()
     last_mayram_blue_team = []
     last_mayram_red_team = []
+    mayram_test_mode = False
     await delete_mayram_queue_message()
 
     await send_embed(ctx, "ARAM Mayhem Queue Cleared", "The ARAM Mayhem queue, queue post, and active teams were cleared.", COLOR_SUCCESS)
@@ -2607,6 +2734,7 @@ async def mayramclearqueue(ctx):
 @bot.command()
 async def clearqueue(ctx):
     global queue_locked, last_blue_team, last_red_team, last_teams_message_id, last_teams_channel_id, last_match_history_message_id, last_match_history_channel_id
+    global queue_test_mode
 
     if not await require_admin(ctx):
         return
@@ -2622,6 +2750,7 @@ async def clearqueue(ctx):
     last_teams_channel_id = None
     last_match_history_message_id = None
     last_match_history_channel_id = None
+    queue_test_mode = False
 
     await delete_queue_message()
 
@@ -2641,23 +2770,9 @@ async def addtestplayers(ctx):
     if not await require_admin(ctx):
         return
 
-    test_players = [
-        {"discord_id": 900001, "name": "TestTop", "rank": "Gold", "rating": 1250, "role_ratings": {"Top": 1250, "Jungle": 1000, "Mid": 1150, "ADC": 1000, "Support": 1000}, "primary_role": "Top", "secondary_role": "Mid", "wins": 0, "losses": 0},
-        {"discord_id": 900002, "name": "TestJungle", "rank": "Silver", "rating": 1100, "role_ratings": {"Top": 850, "Jungle": 1100, "Mid": 850, "ADC": 850, "Support": 1000}, "primary_role": "Jungle", "secondary_role": "Support", "wins": 0, "losses": 0},
-        {"discord_id": 900003, "name": "TestMid", "rank": "Platinum", "rating": 1400, "role_ratings": {"Top": 1150, "Jungle": 1150, "Mid": 1400, "ADC": 1300, "Support": 1150}, "primary_role": "Mid", "secondary_role": "ADC", "wins": 0, "losses": 0},
-        {"discord_id": 900004, "name": "TestADC", "rank": "Bronze", "rating": 950, "role_ratings": {"Top": 700, "Jungle": 700, "Mid": 700, "ADC": 950, "Support": 850}, "primary_role": "ADC", "secondary_role": "Support", "wins": 0, "losses": 0},
-        {"discord_id": 900005, "name": "TestSupport", "rank": "Emerald", "rating": 1550, "role_ratings": {"Top": 1300, "Jungle": 1450, "Mid": 1300, "ADC": 1300, "Support": 1550}, "primary_role": "Support", "secondary_role": "Jungle", "wins": 0, "losses": 0},
-        {"discord_id": 900006, "name": "TestFill1", "rank": "Iron", "rating": 800, "role_ratings": {"Top": 800, "Jungle": 800, "Mid": 800, "ADC": 800, "Support": 800}, "primary_role": "Fill", "secondary_role": "Top", "wins": 0, "losses": 0},
-        {"discord_id": 900007, "name": "TestFill2", "rank": "Diamond", "rating": 1700, "role_ratings": {"Top": 1700, "Jungle": 1600, "Mid": 1450, "ADC": 1450, "Support": 1450}, "primary_role": "Top", "secondary_role": "Jungle", "wins": 0, "losses": 0},
-        {"discord_id": 900008, "name": "TestFill3", "rank": "Gold", "rating": 1250, "role_ratings": {"Top": 1000, "Jungle": 1000, "Mid": 1250, "ADC": 1000, "Support": 1150}, "primary_role": "Mid", "secondary_role": "Support", "wins": 0, "losses": 0},
-        {"discord_id": 900009, "name": "TestFill4", "rank": "Silver", "rating": 1100, "role_ratings": {"Top": 1000, "Jungle": 850, "Mid": 850, "ADC": 1100, "Support": 850}, "primary_role": "ADC", "secondary_role": "Top", "wins": 0, "losses": 0}
-    ]
-
-    for player in test_players:
-        add_to_queue_or_waitlist(player["discord_id"], player)
-
+    added = fill_queue_with_test_players()
     await update_queue_message()
-    await send_embed(ctx, "Test Players Added", "Added test players. First 10 are active; extras go to the waitlist.", COLOR_SUCCESS)
+    await send_embed(ctx, "Test Players Added", f"Added **{added}** test players. This queue is now in test mode and will not count results.", COLOR_SUCCESS)
 
 
 def refill_active_queue_from_waitlist():
@@ -3612,6 +3727,81 @@ class ResultView(discord.ui.View):
         await self.handle_result(interaction, "red")
 
 
+class MayramResultView(discord.ui.View):
+    """
+    Blue/Red winner buttons posted in #mayram for ARAM Mayhem result reporting.
+    """
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.result_recorded = False
+
+    def disable_all_buttons(self):
+        for child in self.children:
+            child.disabled = True
+
+    async def handle_result(self, interaction: discord.Interaction, winner: str):
+        if not is_admin_member(interaction.user):
+            await interaction.response.send_message(
+                "Only admins can report ARAM Mayhem results.",
+                ephemeral=True
+            )
+            return
+
+        if self.result_recorded:
+            await interaction.response.send_message(
+                "A result has already been recorded for this ARAM Mayhem match.",
+                ephemeral=True
+            )
+            return
+
+        self.result_recorded = True
+        self.disable_all_buttons()
+
+        await interaction.response.edit_message(view=self)
+
+        ctx = InteractionResultContext(interaction)
+        result_command = bot.get_command("mayramresult")
+
+        if result_command is None:
+            await interaction.followup.send(
+                embed=discord.Embed(
+                    title="Result Error",
+                    description="The ARAM Mayhem result command could not be found.",
+                    color=COLOR_ERROR
+                )
+            )
+            return
+
+        try:
+            await result_command.callback(ctx, winner)
+        except Exception as e:
+            print(f"ARAM Mayhem result button error: {e}")
+
+            await interaction.followup.send(
+                embed=discord.Embed(
+                    title="Result Error",
+                    description="Something went wrong while recording the ARAM Mayhem result. Check Railway logs.",
+                    color=COLOR_ERROR
+                )
+            )
+
+    @discord.ui.button(
+        label="Blue Victory",
+        style=discord.ButtonStyle.primary,
+        emoji="🔵"
+    )
+    async def blue_victory(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.handle_result(interaction, "blue")
+
+    @discord.ui.button(
+        label="Red Victory",
+        style=discord.ButtonStyle.danger,
+        emoji="🔴"
+    )
+    async def red_victory(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.handle_result(interaction, "red")
+
+
 @bot.command()
 async def teams(ctx):
     """
@@ -3650,7 +3840,9 @@ async def teams(ctx):
     last_teams_channel_id = ctx.channel.id
 
     await post_generated_teams_to_match_history(ctx.guild)
-    await open_betting_for_current_match(ctx.guild)
+
+    if not queue_test_mode:
+        await open_betting_for_current_match(ctx.guild)
 
 
 @bot.command()
@@ -3673,6 +3865,7 @@ async def mayramteams(ctx):
     last_mayram_red_team = red_team
 
     await ctx.send(embed=build_mayram_teams_embed())
+    await post_mayram_teams_to_channel(ctx.guild)
 
 
 @bot.command()
@@ -3796,6 +3989,7 @@ async def result(ctx, winner: str):
     awards coins, clears played users from queue, and prepares rollback data.
     """
     global queue_locked, last_blue_team, last_red_team, last_teams_message_id, last_teams_channel_id, last_match_history_message_id, last_match_history_channel_id, last_result_rollback, active_betting_id
+    global queue_test_mode
 
     if not await require_admin(ctx):
         return
@@ -3808,6 +4002,29 @@ async def result(ctx, winner: str):
 
     if not last_blue_team or not last_red_team:
         await send_embed(ctx, "No Teams Found", "Use `!teams` before recording a result.", COLOR_WARNING)
+        return
+
+    if queue_test_mode:
+        for player in last_blue_team + last_red_team:
+            if player["discord_id"] >= 900000:
+                player_queue.pop(player["discord_id"], None)
+
+        await refund_active_betting("Test result was recorded.")
+        await update_queue_message()
+
+        last_blue_team = []
+        last_red_team = []
+        last_teams_message_id = None
+        last_teams_channel_id = None
+        queue_locked = False
+        queue_test_mode = False
+
+        await send_embed(
+            ctx,
+            "Test Result Ignored",
+            "This was a test-filled queue, so no ratings, coins, betting, match history, or winrates were changed.",
+            COLOR_WARNING
+        )
         return
 
     # Save the current match and queue state so !rollback can undo a wrong result.
@@ -4052,7 +4269,7 @@ async def result(ctx, winner: str):
 
 @bot.command()
 async def mayramresult(ctx, winner: str):
-    global last_mayram_blue_team, last_mayram_red_team
+    global last_mayram_blue_team, last_mayram_red_team, mayram_test_mode
 
     if not await require_admin(ctx):
         return
@@ -4065,6 +4282,25 @@ async def mayramresult(ctx, winner: str):
 
     if not last_mayram_blue_team or not last_mayram_red_team:
         await send_embed(ctx, "No ARAM Mayhem Teams", "Use `!mayramteams` before recording a result.", COLOR_WARNING)
+        return
+
+    if mayram_test_mode:
+        for player in last_mayram_blue_team + last_mayram_red_team:
+            if player["discord_id"] >= 990000:
+                mayram_queue.pop(player["discord_id"], None)
+
+        await update_mayram_queue_message()
+
+        last_mayram_blue_team = []
+        last_mayram_red_team = []
+        mayram_test_mode = False
+
+        await send_embed(
+            ctx,
+            "ARAM Mayhem Test Result Ignored",
+            "This was a test-filled queue, so no ARAM Mayhem ratings or match history were changed.",
+            COLOR_WARNING
+        )
         return
 
     blue_rating = sum(player["rating"] for player in last_mayram_blue_team)
