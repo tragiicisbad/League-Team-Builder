@@ -54,6 +54,8 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 JOIN_EMOJI = "✅"
 STAFF_ROLE_NAMES = ["Customs Admin", "Moderator"]
+QUEUE_CHANNEL_NAME = "queue"
+GAMETIME_CHANNEL_NAME = "gametime"
 PROMOTION_CHANNEL_NAME = "general"
 MATCH_HISTORY_CHANNEL_NAME = "match-history"
 MAYRAM_CHANNEL_NAME = "mayram"
@@ -875,6 +877,13 @@ def is_admin_member(member):
     )
 
 
+def find_text_channel(guild, channel_name):
+    if guild is None:
+        return None
+
+    return discord.utils.get(guild.text_channels, name=channel_name)
+
+
 def role_rating(player, role):
     return player["role_ratings"].get(role, player["rating"])
 
@@ -1469,6 +1478,28 @@ def build_mayram_queue_embed():
     return embed
 
 
+def build_queue_launcher_embed():
+    embed = discord.Embed(
+        title="Queue Launcher",
+        description="Staff can start the active queue posts from here.",
+        color=COLOR_QUEUE
+    )
+
+    embed.add_field(
+        name="League 5v5",
+        value=f"Posts the 5v5 queue in `#{GAMETIME_CHANNEL_NAME}`.",
+        inline=False
+    )
+
+    embed.add_field(
+        name="ARAM Mayhem",
+        value=f"Posts the ARAM Mayhem queue in `#{MAYRAM_CHANNEL_NAME}`.",
+        inline=False
+    )
+
+    return embed
+
+
 def find_balanced_mayram_teams(players):
     best_blue = None
     best_red = None
@@ -1607,6 +1638,61 @@ async def run_test_fill_from_button(interaction, queue_name):
     )
 
 
+async def clear_5v5_queue_state(refund_reason="Queue was cleared."):
+    global queue_locked, last_blue_team, last_red_team, last_teams_message_id, last_teams_channel_id
+    global last_match_history_message_id, last_match_history_channel_id, queue_test_mode
+
+    refunded_bets = await refund_active_betting(refund_reason)
+
+    player_queue.clear()
+    waitlist_queue.clear()
+    queue_locked = False
+    last_blue_team = []
+    last_red_team = []
+    last_teams_message_id = None
+    last_teams_channel_id = None
+    last_match_history_message_id = None
+    last_match_history_channel_id = None
+    queue_test_mode = False
+
+    return refunded_bets
+
+
+async def clear_mayram_queue_state():
+    global last_mayram_blue_team, last_mayram_red_team, mayram_test_mode
+
+    mayram_queue.clear()
+    last_mayram_blue_team = []
+    last_mayram_red_team = []
+    mayram_test_mode = False
+
+
+async def run_clear_queue_from_button(interaction, queue_name):
+    if not is_admin_member(interaction.user):
+        await interaction.response.send_message("Only staff can clear queues.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+
+    if queue_name == "5v5":
+        target_channel = bot.get_channel(queue_channel_id) if queue_channel_id else interaction.channel
+        refunded_bets = await clear_5v5_queue_state("Queue was cleared.")
+        await create_queue_message(target_channel, replace_existing=True)
+        await interaction.followup.send(
+            f"5v5 queue cleared and refreshed. Refunded active bets: **{refunded_bets}**",
+            ephemeral=True
+        )
+        return
+
+    target_channel = bot.get_channel(mayram_queue_channel_id) if mayram_queue_channel_id else interaction.channel
+    await clear_mayram_queue_state()
+    await create_mayram_queue_message(target_channel, replace_existing=True)
+    await interaction.followup.send(
+        "ARAM Mayhem queue cleared and refreshed.",
+        ephemeral=True
+    )
+
+
 async def run_command_from_button(interaction, command_name, *args):
     if not is_admin_member(interaction.user):
         await interaction.response.send_message("Only staff can generate teams.", ephemeral=True)
@@ -1631,6 +1717,10 @@ class QueueTeamsView(discord.ui.View):
     async def generate_teams(self, interaction: discord.Interaction, button: discord.ui.Button):
         await run_command_from_button(interaction, "teams")
 
+    @discord.ui.button(label="Clear", style=discord.ButtonStyle.danger, custom_id="queue_clear")
+    async def clear_queue(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await run_clear_queue_from_button(interaction, "5v5")
+
     @discord.ui.button(label="Test", style=discord.ButtonStyle.secondary, custom_id="queue_test_fill")
     async def test_fill(self, interaction: discord.Interaction, button: discord.ui.Button):
         await run_test_fill_from_button(interaction, "5v5")
@@ -1644,9 +1734,58 @@ class MayramQueueTeamsView(discord.ui.View):
     async def generate_teams(self, interaction: discord.Interaction, button: discord.ui.Button):
         await run_command_from_button(interaction, "mayramteams")
 
+    @discord.ui.button(label="Clear", style=discord.ButtonStyle.danger, custom_id="mayram_queue_clear")
+    async def clear_queue(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await run_clear_queue_from_button(interaction, "mayram")
+
     @discord.ui.button(label="Test", style=discord.ButtonStyle.secondary, custom_id="mayram_queue_test_fill")
     async def test_fill(self, interaction: discord.Interaction, button: discord.ui.Button):
         await run_test_fill_from_button(interaction, "mayram")
+
+
+async def start_queue_from_launcher(interaction, queue_name, target_channel_name, create_message):
+    if not is_admin_member(interaction.user):
+        await interaction.response.send_message("Only staff can start queue posts.", ephemeral=True)
+        return
+
+    channel = find_text_channel(interaction.guild, target_channel_name)
+
+    if channel is None:
+        await interaction.response.send_message(
+            f"I could not find a `#{target_channel_name}` channel.",
+            ephemeral=True
+        )
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    await create_message(channel, replace_existing=True)
+    await interaction.followup.send(
+        f"{queue_name} queue posted in {channel.mention}.",
+        ephemeral=True
+    )
+
+
+class QueueLauncherView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Start 5v5 Queue", style=discord.ButtonStyle.primary, custom_id="queue_launcher_5v5")
+    async def start_5v5_queue(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await start_queue_from_launcher(
+            interaction,
+            "5v5",
+            GAMETIME_CHANNEL_NAME,
+            create_queue_message
+        )
+
+    @discord.ui.button(label="Start ARAM Mayhem", style=discord.ButtonStyle.primary, custom_id="queue_launcher_mayram")
+    async def start_mayram_queue(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await start_queue_from_launcher(
+            interaction,
+            "ARAM Mayhem",
+            MAYRAM_CHANNEL_NAME,
+            create_mayram_queue_message
+        )
 
 
 async def update_queue_message():
@@ -2330,6 +2469,7 @@ async def on_ready():
     if not persistent_views_registered:
         bot.add_view(QueueTeamsView())
         bot.add_view(MayramQueueTeamsView())
+        bot.add_view(QueueLauncherView())
         persistent_views_registered = True
 
     try:
@@ -2530,6 +2670,42 @@ async def queuepost(ctx):
         )
 
 
+@bot.command()
+async def queuepanel(ctx):
+    if not await require_admin(ctx):
+        return
+
+    channel = find_text_channel(ctx.guild, QUEUE_CHANNEL_NAME)
+
+    if channel is None:
+        await send_embed(
+            ctx,
+            "Queue Channel Missing",
+            f"I could not find a `#{QUEUE_CHANNEL_NAME}` channel.",
+            COLOR_ERROR
+        )
+        return
+
+    try:
+        await channel.send(embed=build_queue_launcher_embed(), view=QueueLauncherView())
+        await ctx.send(
+            embed=discord.Embed(
+                title="Queue Launcher Posted",
+                description=f"The queue launcher was posted in {channel.mention}.",
+                color=COLOR_SUCCESS
+            ),
+            delete_after=8
+        )
+    except Exception as e:
+        print(f"Queue panel error: {e}")
+        await send_embed(
+            ctx,
+            "Queue Launcher Error",
+            "The bot could not post the queue launcher. Check its permissions in the queue channel.",
+            COLOR_ERROR
+        )
+
+
 @bot.event
 async def on_raw_reaction_add(payload):
     if payload.user_id == bot.user.id:
@@ -2717,15 +2893,10 @@ async def mayramleave(ctx):
 
 @bot.command()
 async def mayramclearqueue(ctx):
-    global last_mayram_blue_team, last_mayram_red_team, mayram_test_mode
-
     if not await require_admin(ctx):
         return
 
-    mayram_queue.clear()
-    last_mayram_blue_team = []
-    last_mayram_red_team = []
-    mayram_test_mode = False
+    await clear_mayram_queue_state()
     await delete_mayram_queue_message()
 
     await send_embed(ctx, "ARAM Mayhem Queue Cleared", "The ARAM Mayhem queue, queue post, and active teams were cleared.", COLOR_SUCCESS)
@@ -2733,24 +2904,10 @@ async def mayramclearqueue(ctx):
 
 @bot.command()
 async def clearqueue(ctx):
-    global queue_locked, last_blue_team, last_red_team, last_teams_message_id, last_teams_channel_id, last_match_history_message_id, last_match_history_channel_id
-    global queue_test_mode
-
     if not await require_admin(ctx):
         return
 
-    refunded_bets = await refund_active_betting("Queue was cleared.")
-
-    player_queue.clear()
-    waitlist_queue.clear()
-    queue_locked = False
-    last_blue_team = []
-    last_red_team = []
-    last_teams_message_id = None
-    last_teams_channel_id = None
-    last_match_history_message_id = None
-    last_match_history_channel_id = None
-    queue_test_mode = False
+    refunded_bets = await clear_5v5_queue_state("Queue was cleared.")
 
     await delete_queue_message()
 
