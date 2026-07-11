@@ -45,6 +45,7 @@ from database import (
 # Bot setup and server-specific constants.
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
+SYNC_SLASH_COMMANDS = os.getenv("SYNC_SLASH_COMMANDS", "").lower() in ("1", "true", "yes", "on")
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -2618,14 +2619,17 @@ async def on_ready():
         bot.add_view(QueueLauncherView())
         persistent_views_registered = True
 
-    try:
-        for guild in bot.guilds:
-            bot.tree.copy_global_to(guild=guild)
-            synced = await bot.tree.sync(guild=guild)
-            print(f"Synced {len(synced)} slash commands to {guild.name}")
+    if SYNC_SLASH_COMMANDS:
+        try:
+            for guild in bot.guilds:
+                bot.tree.copy_global_to(guild=guild)
+                synced = await bot.tree.sync(guild=guild)
+                print(f"Synced {len(synced)} slash commands to {guild.name}")
 
-    except Exception as e:
-        print(f"Could not sync slash commands: {e}")
+        except Exception as e:
+            print(f"Could not sync slash commands: {e}")
+    else:
+        print("Slash command sync skipped. Set SYNC_SLASH_COMMANDS=true to sync intentionally.")
 
     print(f"Logged in as {bot.user}")
 
