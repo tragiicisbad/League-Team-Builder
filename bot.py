@@ -38,7 +38,8 @@ from database import (
     get_mayram_player,
     update_mayram_player_after_match,
     save_mayram_match,
-    get_mayram_leaderboard
+    get_mayram_leaderboard,
+    factory_reset_all_data
 )
 
 
@@ -3733,6 +3734,78 @@ async def fullseasonreset(ctx):
             f"Deleted **{deleted_matches}** matches.\n"
             f"Reset ratings, role ratings, wins, and losses for **{reset_count}** players.\n"
             "Player signup profiles were kept."
+        ),
+        COLOR_SUCCESS
+    )
+
+
+@bot.command()
+async def factoryreset(ctx, confirmation: str = None):
+    global queue_locked, last_blue_team, last_red_team, last_teams_message_id, last_teams_channel_id
+    global last_match_history_message_id, last_match_history_channel_id, last_result_rollback
+    global queue_test_mode, active_betting_id
+    global last_mayram_blue_team, last_mayram_red_team, mayram_test_mode
+    global last_mayram_teams_message_id, last_mayram_teams_channel_id, active_mayram_betting_id
+
+    if not await require_admin(ctx):
+        return
+
+    if confirmation != "CONFIRM":
+        await send_embed(
+            ctx,
+            "Factory Reset Requires Confirmation",
+            (
+                "This permanently deletes all saved signups, ratings, coins, match history, "
+                "season archives, ARAM Mayhem data, and betting records.\n\n"
+                "To continue, run `!factoryreset CONFIRM`."
+            ),
+            COLOR_WARNING
+        )
+        return
+
+    counts = factory_reset_all_data()
+
+    player_queue.clear()
+    waitlist_queue.clear()
+    mayram_queue.clear()
+
+    queue_locked = False
+    queue_test_mode = False
+    mayram_test_mode = False
+
+    last_blue_team = []
+    last_red_team = []
+    last_teams_message_id = None
+    last_teams_channel_id = None
+    last_match_history_message_id = None
+    last_match_history_channel_id = None
+    last_result_rollback = None
+    active_betting_id = None
+
+    last_mayram_blue_team = []
+    last_mayram_red_team = []
+    last_mayram_teams_message_id = None
+    last_mayram_teams_channel_id = None
+    active_mayram_betting_id = None
+
+    await delete_queue_message()
+    await delete_mayram_queue_message()
+    await update_winrate_channel(ctx.guild)
+
+    deleted_total = sum(counts.values())
+
+    await send_embed(
+        ctx,
+        "Factory Reset Complete",
+        (
+            f"Deleted **{deleted_total}** saved records.\n\n"
+            f"5v5 signups removed: **{counts['players']}**\n"
+            f"5v5 matches removed: **{counts['matches']}**\n"
+            f"Season archive records removed: **{counts['season_player_history'] + counts['season_match_history']}**\n"
+            f"ARAM Mayhem profiles removed: **{counts['mayram_players']}**\n"
+            f"ARAM Mayhem matches removed: **{counts['mayram_matches']}**\n"
+            f"Betting records removed: **{counts['betting_matches'] + counts['bets'] + counts['betting_payouts']}**\n\n"
+            "All players will need to use `/signup` again before joining the 5v5 queue."
         ),
         COLOR_SUCCESS
     )

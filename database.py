@@ -576,6 +576,51 @@ def full_season_rollover(season_name="Season 1"):
     }
 
 
+def factory_reset_all_data():
+    """
+    Permanently clears all player signup data, queues/history backing data,
+    season archives, ARAM Mayhem data, and betting records.
+    """
+    conn = connect()
+    cursor = conn.cursor()
+
+    tables = [
+        "players",
+        "matches",
+        "season_player_history",
+        "season_match_history",
+        "betting_matches",
+        "bets",
+        "betting_payouts",
+        "mayram_players",
+        "mayram_matches"
+    ]
+
+    counts = {}
+    for table in tables:
+        cursor.execute(f"SELECT COUNT(*) FROM {table}")
+        counts[table] = cursor.fetchone()[0]
+
+    cursor.execute("""
+        TRUNCATE TABLE
+            bets,
+            betting_payouts,
+            betting_matches,
+            matches,
+            season_match_history,
+            season_player_history,
+            players,
+            mayram_matches,
+            mayram_players
+        RESTART IDENTITY CASCADE
+    """)
+
+    conn.commit()
+    conn.close()
+
+    return counts
+
+
 
 def get_all_player_ids():
     conn = connect()
