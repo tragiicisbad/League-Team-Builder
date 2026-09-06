@@ -67,6 +67,7 @@ RANK_ROLE_NAMES = [
     "Master", "Grandmaster", "Challenger"
 ]
 MAX_QUEUE_SIZE = 10
+QUEUE_INACTIVITY_TIMEOUT_SECONDS = 60 * 60
 BASE_RATING_CHANGE = 30
 MIN_RATING_CHANGE = 30
 MAX_RATING_CHANGE = 50
@@ -950,6 +951,10 @@ def refresh_player_in_queues(discord_id):
 # Short-lived runtime state. These values reset when the bot restarts.
 queue_message_id = None
 queue_channel_id = None
+queue_started_at = None
+queue_last_activity_at = None
+queue_expire_at = None
+queue_expire_task = None
 
 player_queue = {}
 waitlist_queue = {}
@@ -1523,6 +1528,14 @@ def build_queue_embed():
     else:
         embed.add_field(name="Waitlist", value="No players waiting.", inline=False)
 
+    expires_text = queue_expiration_text()
+    if expires_text:
+        embed.add_field(
+            name="Queue Timer",
+            value=f"Expires {expires_text}. Any join or leave resets the 1-hour inactivity timer.",
+            inline=False
+        )
+
     embed.set_footer(text="Click Generate Teams when 10 players are active. After !result, a fresh queue post is created.")
     return embed
 
@@ -1577,6 +1590,7 @@ async def run_test_fill_from_button(interaction, queue_name):
 async def clear_5v5_queue_state(refund_reason="Queue was cleared."):
     global queue_locked, last_blue_team, last_red_team, last_teams_message_id, last_teams_channel_id
     global last_match_history_message_id, last_match_history_channel_id, queue_test_mode
+    global queue_started_at, queue_last_activity_at, queue_expire_at
 
     refunded_bets = await refund_active_betting(refund_reason)
 
@@ -1590,6 +1604,9 @@ async def clear_5v5_queue_state(refund_reason="Queue was cleared."):
     last_match_history_message_id = None
     last_match_history_channel_id = None
     queue_test_mode = False
+    queue_started_at = None
+    queue_last_activity_at = None
+    queue_expire_at = None
 
     return refunded_bets
 
@@ -1643,6 +1660,156 @@ class QueueTeamsView(discord.ui.View):
         await run_test_fill_from_button(interaction, "5v5")
 
 
+class QueueRestartView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Start Queue Again", style=discord.ButtonStyle.primary, custom_id="queue_restart")
+    async def restart_queue(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if queue_message_id is not None:
+            await interaction.response.send_message(
+                "There is already an active queue.",
+                ephemeral=True
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        await create_queue_message(interaction.channel, replace_existing=False)
+
+        button.disabled = True
+        try:
+            await interaction.message.edit(view=self)
+        except Exception as e:
+            print(f"Could not disable queue restart button: {e}")
+
+        await interaction.followup.send(
+            "Queue started again.",
+            ephemeral=True
+        )
+
+
+def parse_queue_duration(duration_text):
+    if not duration_text:
+        return None
+
+    text = duration_text.strip().lower()
+
+    try:
+        if text.endswith("h"):
+            return int(float(text[:-1]) * 60 * 60)
+        if text.endswith("m"):
+            return int(float(text[:-1]) * 60)
+        if text.endswith("s"):
+            return int(float(text[:-1]))
+        return int(float(text) * 60)
+    except ValueError:
+        return None
+
+
+def format_queue_duration(seconds):
+    if seconds % 3600 == 0:
+        hours = seconds // 3600
+        return f"{hours} hour{'s' if hours != 1 else ''}"
+
+    if seconds % 60 == 0:
+        minutes = seconds // 60
+        return f"{minutes} minute{'s' if minutes != 1 else ''}"
+
+    return f"{seconds} second{'s' if seconds != 1 else ''}"
+
+
+def queue_expiration_timestamp():
+    if queue_message_id is None:
+        return None
+
+    times = [
+        expires_at
+        for expires_at in (queue_expire_at, queue_last_activity_at + timedelta(seconds=QUEUE_INACTIVITY_TIMEOUT_SECONDS) if queue_last_activity_at else None)
+        if expires_at is not None
+    ]
+
+    if not times:
+        return None
+
+    return min(times)
+
+
+def queue_expiration_text():
+    expires_at = queue_expiration_timestamp()
+
+    if expires_at is None:
+        return None
+
+    return f"<t:{int(expires_at.timestamp())}:R>"
+
+
+def touch_queue_activity():
+    global queue_last_activity_at
+    if queue_message_id is None:
+        return
+
+    queue_last_activity_at = datetime.now()
+    restart_queue_expire_task()
+
+
+async def expire_queue_if_needed():
+    global queue_expire_task
+
+    while queue_message_id is not None:
+        expires_at = queue_expiration_timestamp()
+
+        if expires_at is None:
+            return
+
+        seconds_until_expiry = (expires_at - datetime.now()).total_seconds()
+
+        if seconds_until_expiry > 0:
+            await asyncio.sleep(min(seconds_until_expiry, 60))
+            continue
+
+        channel = bot.get_channel(queue_channel_id) if queue_channel_id else None
+        refunded_bets = await clear_5v5_queue_state("Queue expired.")
+        await delete_queue_message()
+
+        if channel:
+            await channel.send(
+                embed=discord.Embed(
+                    title="Queue Expired",
+                    description=(
+                        "The queue was closed because its timer expired or there was no signup activity for 1 hour.\n"
+                        f"Refunded active bets: **{refunded_bets}**"
+                    ),
+                    color=COLOR_WARNING
+                ),
+                view=QueueRestartView()
+            )
+
+        break
+
+    queue_expire_task = None
+
+
+def restart_queue_expire_task():
+    global queue_expire_task
+
+    if queue_expire_task and not queue_expire_task.done() and queue_expire_task is not asyncio.current_task():
+        queue_expire_task.cancel()
+
+    queue_expire_task = bot.loop.create_task(expire_queue_if_needed())
+
+
+def stop_queue_expire_task():
+    global queue_started_at, queue_last_activity_at, queue_expire_at, queue_expire_task
+
+    queue_started_at = None
+    queue_last_activity_at = None
+    queue_expire_at = None
+
+    if queue_expire_task and not queue_expire_task.done() and queue_expire_task is not asyncio.current_task():
+        queue_expire_task.cancel()
+    queue_expire_task = None
+
+
 async def update_queue_message():
     if queue_message_id is None or queue_channel_id is None:
         return
@@ -1660,6 +1827,8 @@ async def update_queue_message():
 
 async def delete_queue_message():
     global queue_message_id, queue_channel_id
+    global queue_started_at, queue_last_activity_at, queue_expire_at
+    global queue_expire_task
 
     if queue_message_id is None or queue_channel_id is None:
         return None
@@ -1684,18 +1853,31 @@ async def delete_queue_message():
 
     queue_message_id = None
     queue_channel_id = None
+    queue_started_at = None
+    queue_last_activity_at = None
+    queue_expire_at = None
+
+    if queue_expire_task and not queue_expire_task.done() and queue_expire_task is not asyncio.current_task():
+        queue_expire_task.cancel()
+    queue_expire_task = None
 
     return channel
 
 
-async def create_queue_message(channel, replace_existing=True):
+async def create_queue_message(channel, replace_existing=True, duration_seconds=None):
     global queue_message_id, queue_channel_id
+    global queue_started_at, queue_last_activity_at, queue_expire_at
 
     if channel is None:
         return None
 
     if replace_existing and queue_message_id is not None:
         await delete_queue_message()
+
+    now = datetime.now()
+    queue_started_at = now
+    queue_last_activity_at = now
+    queue_expire_at = now + timedelta(seconds=duration_seconds) if duration_seconds else None
 
     msg = await channel.send(embed=build_queue_embed(), view=QueueTeamsView())
     queue_message_id = msg.id
@@ -1705,6 +1887,8 @@ async def create_queue_message(channel, replace_existing=True):
         await msg.add_reaction(JOIN_EMOJI)
     except Exception as e:
         print(f"Could not add join reaction to queue message: {e}")
+
+    restart_queue_expire_task()
 
     return msg
 
@@ -2261,6 +2445,7 @@ async def on_ready():
 
     if not persistent_views_registered:
         bot.add_view(QueueTeamsView())
+        bot.add_view(QueueRestartView())
         persistent_views_registered = True
 
     if SYNC_SLASH_COMMANDS:
@@ -2421,14 +2606,31 @@ async def profile(ctx, member: discord.Member = None):
 
 
 @bot.command()
-async def queuepost(ctx):
+async def queuepost(ctx, duration: str = None):
+    duration_seconds = parse_queue_duration(duration)
+
+    if duration and (duration_seconds is None or duration_seconds <= 0):
+        await send_embed(
+            ctx,
+            "Invalid Queue Time",
+            "Use a time like `30m`, `90m`, `2h`, or a plain number of minutes.",
+            COLOR_ERROR
+        )
+        return
+
     try:
-        await create_queue_message(ctx.channel, replace_existing=True)
+        await create_queue_message(ctx.channel, replace_existing=True, duration_seconds=duration_seconds)
+
+        duration_text = (
+            f"This queue is set for **{format_queue_duration(duration_seconds)}** and also expires after 1 hour without signup activity."
+            if duration_seconds
+            else "This queue expires after 1 hour without signup activity."
+        )
 
         await ctx.send(
             embed=discord.Embed(
                 title="Queue Post Refreshed",
-                description="A fresh queue post has been created. Any old queue post was removed if it still existed.",
+                description=f"A fresh queue post has been created. Any old queue post was removed if it still existed.\n\n{duration_text}",
                 color=COLOR_SUCCESS
             ),
             delete_after=8
@@ -2446,6 +2648,40 @@ async def queuepost(ctx):
                 color=COLOR_ERROR
             )
         )
+
+
+@bot.command()
+async def setqueuetime(ctx, duration: str):
+    global queue_expire_at
+
+    if not await require_admin(ctx):
+        return
+
+    if queue_message_id is None:
+        await send_embed(ctx, "No Active Queue", "There is no active queue post to time.", COLOR_WARNING)
+        return
+
+    duration_seconds = parse_queue_duration(duration)
+
+    if duration_seconds is None or duration_seconds <= 0:
+        await send_embed(
+            ctx,
+            "Invalid Queue Time",
+            "Use a time like `30m`, `90m`, `2h`, or a plain number of minutes.",
+            COLOR_ERROR
+        )
+        return
+
+    queue_expire_at = datetime.now() + timedelta(seconds=duration_seconds)
+    restart_queue_expire_task()
+    await update_queue_message()
+
+    await send_embed(
+        ctx,
+        "Queue Timer Updated",
+        f"The current queue will expire in **{format_queue_duration(duration_seconds)}** or after 1 hour without signup activity.",
+        COLOR_SUCCESS
+    )
 
 
 @bot.event
@@ -2479,6 +2715,7 @@ async def on_raw_reaction_add(payload):
         return
 
     result = add_to_queue_or_waitlist(payload.user_id, player)
+    touch_queue_activity()
 
     if result in ["waitlist", "waitlist_locked"]:
         channel = bot.get_channel(payload.channel_id)
@@ -2511,6 +2748,7 @@ async def on_raw_reaction_remove(payload):
         return
 
     removed_from_active = False
+    removed_from_waitlist = False
 
     if payload.user_id in player_queue:
         if queue_locked:
@@ -2522,6 +2760,7 @@ async def on_raw_reaction_remove(payload):
 
     if payload.user_id in waitlist_queue:
         del waitlist_queue[payload.user_id]
+        removed_from_waitlist = True
 
     if removed_from_active:
         promoted_player = promote_next_waitlisted_player()
@@ -2536,6 +2775,9 @@ async def on_raw_reaction_remove(payload):
                         color=COLOR_SUCCESS
                     )
                 )
+
+    if removed_from_active or removed_from_waitlist:
+        touch_queue_activity()
 
     await update_queue_message()
 
@@ -3482,6 +3724,7 @@ async def lockqueue(ctx):
         return
 
     queue_locked = True
+    stop_queue_expire_task()
     await update_queue_message()
     await send_embed(ctx, "Queue Locked", "The active queue is now locked. New players will be placed on the waitlist.", COLOR_WARNING)
 
@@ -3494,6 +3737,7 @@ async def unlockqueue(ctx):
         return
 
     queue_locked = False
+    touch_queue_activity()
     promoted = refill_active_queue_from_waitlist()
     await update_queue_message()
 
@@ -3683,6 +3927,7 @@ async def teams(ctx):
     last_blue_team = best_blue
     last_red_team = best_red
     queue_locked = True
+    stop_queue_expire_task()
     await update_queue_message()
 
     last_teams_embed_title = "Balanced Teams Generated"
