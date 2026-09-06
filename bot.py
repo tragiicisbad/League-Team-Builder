@@ -56,7 +56,6 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 JOIN_EMOJI = "✅"
 STAFF_ROLE_NAMES = ["Customs Admin", "Moderator"]
-QUEUE_CHANNEL_NAME = "queue"
 GAMETIME_CHANNEL_NAME = "gametime"
 PROMOTION_CHANNEL_NAME = "general"
 MATCH_HISTORY_CHANNEL_NAME = "match-history"
@@ -1397,22 +1396,6 @@ def build_queue_embed():
     return embed
 
 
-def build_queue_launcher_embed():
-    embed = discord.Embed(
-        title="Queue Launcher",
-        description="Staff can start the active queue posts from here.",
-        color=COLOR_QUEUE
-    )
-
-    embed.add_field(
-        name="League 5v5",
-        value=f"Posts the 5v5 queue in `#{GAMETIME_CHANNEL_NAME}`.",
-        inline=False
-    )
-
-    return embed
-
-
 def mayram_team_lines(team):
     return "\n".join(
         f"**{player['name']}**  •  `{player['rating']}` rating"
@@ -1594,42 +1577,6 @@ class QueueTeamsView(discord.ui.View):
     @discord.ui.button(label="Test", style=discord.ButtonStyle.secondary, custom_id="queue_test_fill")
     async def test_fill(self, interaction: discord.Interaction, button: discord.ui.Button):
         await run_test_fill_from_button(interaction, "5v5")
-
-
-async def start_queue_from_launcher(interaction, queue_name, target_channel_name, create_message):
-    if not is_admin_member(interaction.user):
-        await interaction.response.send_message("Only staff can start queue posts.", ephemeral=True)
-        return
-
-    channel = find_text_channel(interaction.guild, target_channel_name)
-
-    if channel is None:
-        await interaction.response.send_message(
-            f"I could not find a `#{target_channel_name}` channel.",
-            ephemeral=True
-        )
-        return
-
-    await interaction.response.defer(ephemeral=True)
-    await create_message(channel, replace_existing=True)
-    await interaction.followup.send(
-        f"{queue_name} queue posted in {channel.mention}.",
-        ephemeral=True
-    )
-
-
-class QueueLauncherView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(label="Start 5v5 Queue", style=discord.ButtonStyle.primary, custom_id="queue_launcher_5v5")
-    async def start_5v5_queue(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await start_queue_from_launcher(
-            interaction,
-            "5v5",
-            GAMETIME_CHANNEL_NAME,
-            create_queue_message
-        )
 
 
 async def update_queue_message():
@@ -2355,7 +2302,6 @@ async def on_ready():
 
     if not persistent_views_registered:
         bot.add_view(QueueTeamsView())
-        bot.add_view(QueueLauncherView())
         persistent_views_registered = True
 
     if SYNC_SLASH_COMMANDS:
@@ -2556,42 +2502,6 @@ async def queuepost(ctx):
                 ),
                 color=COLOR_ERROR
             )
-        )
-
-
-@bot.command()
-async def queuepanel(ctx):
-    if not await require_admin(ctx):
-        return
-
-    channel = find_text_channel(ctx.guild, QUEUE_CHANNEL_NAME)
-
-    if channel is None:
-        await send_embed(
-            ctx,
-            "Queue Channel Missing",
-            f"I could not find a `#{QUEUE_CHANNEL_NAME}` channel.",
-            COLOR_ERROR
-        )
-        return
-
-    try:
-        await channel.send(embed=build_queue_launcher_embed(), view=QueueLauncherView())
-        await ctx.send(
-            embed=discord.Embed(
-                title="Queue Launcher Posted",
-                description=f"The queue launcher was posted in {channel.mention}.",
-                color=COLOR_SUCCESS
-            ),
-            delete_after=8
-        )
-    except Exception as e:
-        print(f"Queue panel error: {e}")
-        await send_embed(
-            ctx,
-            "Queue Launcher Error",
-            "The bot could not post the queue launcher. Check its permissions in the queue channel.",
-            COLOR_ERROR
         )
 
 
