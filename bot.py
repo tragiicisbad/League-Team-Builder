@@ -77,7 +77,7 @@ BASE_RATING_CHANGE = 30
 MIN_RATING_CHANGE = 30
 MAX_RATING_CHANGE = 50
 MIN_LEADERBOARD_GAMES = 5
-HIGH_RATING_FORCE_FILL_THRESHOLD = 1800
+HIGH_RATING_FORCE_FILL_THRESHOLD = 2600
 MAX_LANE_RATING_DIFF = 400
 LANE_OVER_CAP_MULTIPLIER = 35
 LANE_TOTAL_DIFF_MULTIPLIER = 2
@@ -95,6 +95,50 @@ COLOR_BLUE_TEAM = discord.Color.from_rgb(52, 152, 219)
 COLOR_RED_TEAM = discord.Color.from_rgb(231, 76, 60)
 
 RANK_RATINGS = {
+    "Iron IV": 0,
+    "Iron III": 100,
+    "Iron II": 200,
+    "Iron I": 300,
+    "Bronze IV": 400,
+    "Bronze III": 500,
+    "Bronze II": 600,
+    "Bronze I": 700,
+    "Silver IV": 800,
+    "Silver III": 900,
+    "Silver II": 1000,
+    "Silver I": 1100,
+    "Gold IV": 1200,
+    "Gold III": 1300,
+    "Gold II": 1400,
+    "Gold I": 1500,
+    "Platinum IV": 1600,
+    "Platinum III": 1700,
+    "Platinum II": 1800,
+    "Platinum I": 1900,
+    "Emerald IV": 2000,
+    "Emerald III": 2100,
+    "Emerald II": 2200,
+    "Emerald I": 2300,
+    "Diamond IV": 2400,
+    "Diamond III": 2500,
+    "Diamond II": 2600,
+    "Diamond I": 2700,
+    "Master": 2800
+}
+
+RANK_ALIASES = {
+    "Iron": "Iron IV",
+    "Bronze": "Bronze IV",
+    "Silver": "Silver IV",
+    "Gold": "Gold IV",
+    "Platinum": "Platinum IV",
+    "Emerald": "Emerald IV",
+    "Diamond": "Diamond IV",
+    "Grandmaster": "Master",
+    "Challenger": "Master"
+}
+
+OLD_RANK_RATINGS = {
     "Iron": 800,
     "Bronze": 950,
     "Silver": 1100,
@@ -131,8 +175,12 @@ ROLE_EMOJIS = {
 
 
 # Display and rating helpers.
+def rank_role_name(rank):
+    return rank.split()[0]
+
+
 def rank_emoji(rank):
-    return RANK_EMOJIS.get(rank, "")
+    return RANK_EMOJIS.get(rank_role_name(rank), "")
 
 
 def role_emoji(role):
@@ -195,9 +243,16 @@ def avoid_role_display(role):
 
 
 def normalize_rank(rank):
+    normalized_input = " ".join(rank.split())
+
     for valid_rank in RANK_RATINGS:
-        if valid_rank.lower() == rank.lower():
+        if valid_rank.lower() == normalized_input.lower():
             return valid_rank
+
+    for alias, canonical_rank in RANK_ALIASES.items():
+        if alias.lower() == normalized_input.lower():
+            return canonical_rank
+
     return None
 
 
@@ -211,9 +266,9 @@ def normalize_role(role):
 def rank_for_rating(rating):
     """
     Returns the highest rank a rating qualifies for.
-    Example: 1710 -> Diamond
+    Example: 1710 -> Platinum III
     """
-    qualified_rank = "Iron"
+    qualified_rank = "Iron IV"
 
     for rank, required_rating in RANK_RATINGS.items():
         if rating >= required_rating:
@@ -280,21 +335,22 @@ async def sync_member_rank_role(member, overall_rating):
         return
 
     new_rank = rank_for_rating(overall_rating)
+    new_rank_role_name = rank_role_name(new_rank)
 
     rank_roles = [
         role for role in member.guild.roles
         if role.name in RANK_ROLE_NAMES
     ]
 
-    role_to_add = discord.utils.get(member.guild.roles, name=new_rank)
+    role_to_add = discord.utils.get(member.guild.roles, name=new_rank_role_name)
 
     if role_to_add is None:
-        print(f"Rank role not found: {new_rank}")
+        print(f"Rank role not found: {new_rank_role_name}")
         return
 
     roles_to_remove = [
         role for role in rank_roles
-        if role in member.roles and role.name != new_rank
+        if role in member.roles and role.name != new_rank_role_name
     ]
 
     try:
@@ -448,11 +504,11 @@ def update_player_role_rating_manual(discord_id, role, rating):
 def rating_select_options():
     return [
         discord.SelectOption(
-            label=str(rating),
+            label=f"{rank_for_rating(rating)} - {rating}",
             value=str(rating),
-            description=f"Set rating to {rating}"
+            description=f"Set rating to {rank_for_rating(rating)}"
         )
-        for rating in range(600, 2601, 100)
+        for rating in range(0, 2801, 200)
     ]
 
 
@@ -478,7 +534,8 @@ def build_edit_ratings_embed(member, player):
     embed.add_field(
         name="Role Ratings",
         value="\n".join(
-            f"{role_emoji(role)} **{role}:** `{player['role_ratings'][role]}`"
+            f"{role_emoji(role)} **{role}:** {rank_emoji(rank_for_rating(player['role_ratings'][role]))} "
+            f"**{rank_for_rating(player['role_ratings'][role])}** - `{player['role_ratings'][role]}`"
             for role in ROLES
         ),
         inline=False
@@ -544,7 +601,7 @@ def reset_player_ratings_manual(discord_id):
     if not player:
         return False
 
-    base_rating = RANK_RATINGS[player["rank"]]
+    base_rating = RANK_RATINGS[normalize_rank(player["rank"])]
     role_ratings = make_manual_role_ratings(
         base_rating,
         player["primary_role"],
@@ -584,11 +641,11 @@ def reset_player_ratings_manual(discord_id):
 
 def make_manual_role_ratings(base_rating, primary_role, secondary_role):
     ratings = {
-        "Top": base_rating - 250,
-        "Jungle": base_rating - 250,
-        "Mid": base_rating - 250,
-        "ADC": base_rating - 250,
-        "Support": base_rating - 250
+        "Top": max(0, base_rating - 250),
+        "Jungle": max(0, base_rating - 250),
+        "Mid": max(0, base_rating - 250),
+        "ADC": max(0, base_rating - 250),
+        "Support": max(0, base_rating - 250)
     }
 
     if primary_role == "Fill":
@@ -599,11 +656,96 @@ def make_manual_role_ratings(base_rating, primary_role, secondary_role):
 
     if secondary_role == "Fill":
         for role in ratings:
-            ratings[role] = max(ratings[role], base_rating - 100)
+            ratings[role] = max(ratings[role], max(0, base_rating - 100))
     else:
-        ratings[secondary_role] = max(ratings[secondary_role], base_rating - 100)
+        ratings[secondary_role] = max(ratings[secondary_role], max(0, base_rating - 100))
 
     return ratings
+
+
+def convert_old_rating_to_new_scale(old_rating):
+    old_points = list(OLD_RANK_RATINGS.values())
+    new_points = [
+        RANK_RATINGS["Iron IV"],
+        RANK_RATINGS["Bronze IV"],
+        RANK_RATINGS["Silver IV"],
+        RANK_RATINGS["Gold IV"],
+        RANK_RATINGS["Platinum IV"],
+        RANK_RATINGS["Emerald IV"],
+        RANK_RATINGS["Diamond IV"],
+        RANK_RATINGS["Master"],
+        RANK_RATINGS["Master"] + 200,
+        RANK_RATINGS["Master"] + 400
+    ]
+
+    if old_rating <= old_points[0]:
+        return 0
+
+    for index in range(1, len(old_points)):
+        previous_old = old_points[index - 1]
+        next_old = old_points[index]
+
+        if old_rating <= next_old:
+            previous_new = new_points[index - 1]
+            next_new = new_points[index]
+            progress = (old_rating - previous_old) / (next_old - previous_old)
+            return round(previous_new + (progress * (next_new - previous_new)))
+
+    return round(new_points[-1] + (old_rating - old_points[-1]))
+
+
+def convert_all_players_to_new_rating_scale():
+    conn = connect()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT discord_id, top_rating, jungle_rating, mid_rating, adc_rating, support_rating, primary_role, secondary_role
+        FROM players
+    """)
+    players = cursor.fetchall()
+
+    for discord_id, top, jungle, mid, adc, support, primary_role, secondary_role in players:
+        new_role_ratings = {
+            "Top": convert_old_rating_to_new_scale(top),
+            "Jungle": convert_old_rating_to_new_scale(jungle),
+            "Mid": convert_old_rating_to_new_scale(mid),
+            "ADC": convert_old_rating_to_new_scale(adc),
+            "Support": convert_old_rating_to_new_scale(support)
+        }
+
+        def selected_rating(role):
+            if role == "Fill":
+                return round(sum(new_role_ratings.values()) / len(new_role_ratings))
+            return new_role_ratings[role]
+
+        new_rating = round((selected_rating(primary_role) + selected_rating(secondary_role)) / 2)
+        new_rank = rank_for_rating(new_rating)
+
+        cursor.execute("""
+            UPDATE players
+            SET rank = %s,
+                rating = %s,
+                top_rating = %s,
+                jungle_rating = %s,
+                mid_rating = %s,
+                adc_rating = %s,
+                support_rating = %s
+            WHERE discord_id = %s
+        """, (
+            new_rank,
+            new_rating,
+            new_role_ratings["Top"],
+            new_role_ratings["Jungle"],
+            new_role_ratings["Mid"],
+            new_role_ratings["ADC"],
+            new_role_ratings["Support"],
+            discord_id
+        ))
+
+    conn.commit()
+    conn.close()
+
+    return len(players)
 
 
 def clear_match_history_manual():
@@ -633,7 +775,7 @@ def reset_all_players_ratings_manual():
     players = cursor.fetchall()
 
     for discord_id, rank, primary_role, secondary_role in players:
-        base_rating = RANK_RATINGS[rank]
+        base_rating = RANK_RATINGS[normalize_rank(rank)]
         role_ratings = make_manual_role_ratings(base_rating, primary_role, secondary_role)
 
         cursor.execute("""
@@ -899,7 +1041,7 @@ def matchmaking_rating(player):
 def apply_high_rating_fill_rule(player):
     """
     Queue-only rule:
-    If a player's overall rating is 1800+, their secondary queue role is treated as Fill.
+    If a player's overall rating is 2600+, their secondary queue role is treated as Fill.
 
     This does not overwrite the saved signup preference in the database.
     It only changes how they appear in queue and how matchmaking assigns roles.
@@ -994,7 +1136,7 @@ def clean_player_line(player):
 
     forced_fill_text = ""
     if player.get("forced_fill_secondary"):
-        forced_fill_text = " • 1800+ Fill"
+        forced_fill_text = " • 2600+ Fill"
 
     return (
         f"{rank_emoji(current_rank)} **{player['name']}** — "
@@ -1015,7 +1157,7 @@ def clean_waitlist_line(index, player):
 
     forced_fill_text = ""
     if player.get("forced_fill_secondary"):
-        forced_fill_text = " • 1800+ Fill"
+        forced_fill_text = " • 2600+ Fill"
 
     return (
         f"**#{index}** {rank_emoji(current_rank)} **{player['name']}** — "
@@ -1265,7 +1407,7 @@ def add_to_queue_or_waitlist(user_id, player):
     First 10 players go into the active queue.
     Any player after 10 automatically goes to the waitlist.
 
-    Players with 1800+ overall rating are treated as Fill for their secondary role
+    Players with 2600+ overall rating are treated as Fill for their secondary role
     while they are in queue.
     """
     player = apply_high_rating_fill_rule(player)
@@ -1467,16 +1609,16 @@ def fill_queue_with_test_players():
     global queue_test_mode
 
     test_players = [
-        {"discord_id": 900001, "name": "TestTop", "rank": "Gold", "rating": 1250, "role_ratings": {"Top": 1250, "Jungle": 1000, "Mid": 1150, "ADC": 1000, "Support": 1000}, "primary_role": "Top", "secondary_role": "Mid", "wins": 0, "losses": 0, "streak": 0},
-        {"discord_id": 900002, "name": "TestJungle", "rank": "Silver", "rating": 1100, "role_ratings": {"Top": 850, "Jungle": 1100, "Mid": 850, "ADC": 850, "Support": 1000}, "primary_role": "Jungle", "secondary_role": "Support", "wins": 0, "losses": 0, "streak": 0},
-        {"discord_id": 900003, "name": "TestMid", "rank": "Platinum", "rating": 1400, "role_ratings": {"Top": 1150, "Jungle": 1150, "Mid": 1400, "ADC": 1300, "Support": 1150}, "primary_role": "Mid", "secondary_role": "ADC", "wins": 0, "losses": 0, "streak": 0},
-        {"discord_id": 900004, "name": "TestADC", "rank": "Bronze", "rating": 950, "role_ratings": {"Top": 700, "Jungle": 700, "Mid": 700, "ADC": 950, "Support": 850}, "primary_role": "ADC", "secondary_role": "Support", "wins": 0, "losses": 0, "streak": 0},
-        {"discord_id": 900005, "name": "TestSupport", "rank": "Emerald", "rating": 1550, "role_ratings": {"Top": 1300, "Jungle": 1450, "Mid": 1300, "ADC": 1300, "Support": 1550}, "primary_role": "Support", "secondary_role": "Jungle", "wins": 0, "losses": 0, "streak": 0},
-        {"discord_id": 900006, "name": "TestFill1", "rank": "Iron", "rating": 800, "role_ratings": {"Top": 800, "Jungle": 800, "Mid": 800, "ADC": 800, "Support": 800}, "primary_role": "Fill", "secondary_role": "Top", "wins": 0, "losses": 0, "streak": 0},
-        {"discord_id": 900007, "name": "TestFill2", "rank": "Diamond", "rating": 1700, "role_ratings": {"Top": 1700, "Jungle": 1600, "Mid": 1450, "ADC": 1450, "Support": 1450}, "primary_role": "Top", "secondary_role": "Jungle", "wins": 0, "losses": 0, "streak": 0},
-        {"discord_id": 900008, "name": "TestFill3", "rank": "Gold", "rating": 1250, "role_ratings": {"Top": 1000, "Jungle": 1000, "Mid": 1250, "ADC": 1000, "Support": 1150}, "primary_role": "Mid", "secondary_role": "Support", "wins": 0, "losses": 0, "streak": 0},
-        {"discord_id": 900009, "name": "TestFill4", "rank": "Silver", "rating": 1100, "role_ratings": {"Top": 1000, "Jungle": 850, "Mid": 850, "ADC": 1100, "Support": 850}, "primary_role": "ADC", "secondary_role": "Top", "wins": 0, "losses": 0, "streak": 0},
-        {"discord_id": 900010, "name": "TestFill5", "rank": "Gold", "rating": 1250, "role_ratings": {"Top": 1150, "Jungle": 1150, "Mid": 1150, "ADC": 1150, "Support": 1250}, "primary_role": "Support", "secondary_role": "Fill", "wins": 0, "losses": 0, "streak": 0}
+        {"discord_id": 900001, "name": "TestTop", "rank": "Gold IV", "rating": 1200, "role_ratings": {"Top": 1200, "Jungle": 950, "Mid": 1100, "ADC": 950, "Support": 950}, "primary_role": "Top", "secondary_role": "Mid", "wins": 0, "losses": 0, "streak": 0},
+        {"discord_id": 900002, "name": "TestJungle", "rank": "Silver I", "rating": 1100, "role_ratings": {"Top": 850, "Jungle": 1100, "Mid": 850, "ADC": 850, "Support": 1000}, "primary_role": "Jungle", "secondary_role": "Support", "wins": 0, "losses": 0, "streak": 0},
+        {"discord_id": 900003, "name": "TestMid", "rank": "Gold II", "rating": 1400, "role_ratings": {"Top": 1150, "Jungle": 1150, "Mid": 1400, "ADC": 1300, "Support": 1150}, "primary_role": "Mid", "secondary_role": "ADC", "wins": 0, "losses": 0, "streak": 0},
+        {"discord_id": 900004, "name": "TestADC", "rank": "Silver III", "rating": 900, "role_ratings": {"Top": 650, "Jungle": 650, "Mid": 650, "ADC": 900, "Support": 800}, "primary_role": "ADC", "secondary_role": "Support", "wins": 0, "losses": 0, "streak": 0},
+        {"discord_id": 900005, "name": "TestSupport", "rank": "Platinum I", "rating": 1900, "role_ratings": {"Top": 1650, "Jungle": 1800, "Mid": 1650, "ADC": 1650, "Support": 1900}, "primary_role": "Support", "secondary_role": "Jungle", "wins": 0, "losses": 0, "streak": 0},
+        {"discord_id": 900006, "name": "TestFill1", "rank": "Iron IV", "rating": 0, "role_ratings": {"Top": 0, "Jungle": 0, "Mid": 0, "ADC": 0, "Support": 0}, "primary_role": "Fill", "secondary_role": "Top", "wins": 0, "losses": 0, "streak": 0},
+        {"discord_id": 900007, "name": "TestFill2", "rank": "Diamond IV", "rating": 2400, "role_ratings": {"Top": 2400, "Jungle": 2300, "Mid": 2150, "ADC": 2150, "Support": 2150}, "primary_role": "Top", "secondary_role": "Jungle", "wins": 0, "losses": 0, "streak": 0},
+        {"discord_id": 900008, "name": "TestFill3", "rank": "Gold III", "rating": 1300, "role_ratings": {"Top": 1050, "Jungle": 1050, "Mid": 1300, "ADC": 1050, "Support": 1200}, "primary_role": "Mid", "secondary_role": "Support", "wins": 0, "losses": 0, "streak": 0},
+        {"discord_id": 900009, "name": "TestFill4", "rank": "Silver II", "rating": 1000, "role_ratings": {"Top": 900, "Jungle": 750, "Mid": 750, "ADC": 1000, "Support": 750}, "primary_role": "ADC", "secondary_role": "Top", "wins": 0, "losses": 0, "streak": 0},
+        {"discord_id": 900010, "name": "TestFill5", "rank": "Gold IV", "rating": 1200, "role_ratings": {"Top": 1100, "Jungle": 1100, "Mid": 1100, "ADC": 1100, "Support": 1200}, "primary_role": "Support", "secondary_role": "Fill", "wins": 0, "losses": 0, "streak": 0}
     ]
 
     added = 0
@@ -2079,8 +2221,8 @@ class SignupView(discord.ui.View):
         save_player(
             discord_id=user_id,
             name=interaction.user.display_name,
-            rank="Iron",
-            rating=RANK_RATINGS["Iron"],
+            rank="Iron IV",
+            rating=RANK_RATINGS["Iron IV"],
             primary_role=primary_role,
             secondary_role=secondary_role,
             avoided_role=avoided_role
@@ -2095,7 +2237,7 @@ class SignupView(discord.ui.View):
                 f"Primary: {role_emoji(primary_role)} **{primary_role}**\n"
                 f"Secondary: {role_emoji(secondary_role)} **{secondary_role}**\n"
                 f"Avoid: **{avoid_role_display(avoided_role)}**\n\n"
-                "Ratings are now set by staff using `!edit @player`. Players with 1800+ overall rating will have their secondary queue role treated as Fill."
+                "Ratings are now set by staff using `!edit @player`. Players with 2600+ overall rating will have their secondary queue role treated as Fill."
             ),
             ephemeral=True
         )
@@ -2363,7 +2505,7 @@ async def signup(ctx):
         value=(
             "Primary and secondary roles decide what you prefer to queue as.\n"
             "Avoided role tells the bot what to avoid assigning you if possible.\n"
-            "Your ratings are handled by staff, not self-selected. Players with 1800+ overall rating have their secondary queue role treated as Fill."
+            "Your ratings are handled by staff, not self-selected. Players with 2600+ overall rating have their secondary queue role treated as Fill."
         ),
         inline=False
     )
@@ -3123,13 +3265,14 @@ async def resetplayer(ctx, member: discord.Member):
     refresh_player_in_queues(member.id)
     await update_queue_message()
 
-    base_rating = RANK_RATINGS[player["rank"]]
+    normalized_rank = normalize_rank(player["rank"])
+    base_rating = RANK_RATINGS[normalized_rank]
 
     await send_embed(
         ctx,
         "Player Reset",
         (
-            f"{rank_emoji(player['rank'])} **{member.display_name}** has been reset to **{player['rank']}**.\n"
+            f"{rank_emoji(normalized_rank)} **{member.display_name}** has been reset to **{normalized_rank}**.\n"
             f"Overall rating reset to **{base_rating}**.\n"
             "Role ratings, wins, and losses were reset. Signup choices were kept."
         ),
@@ -3169,6 +3312,58 @@ async def resetallratings(ctx):
         (
             f"Reset ratings, role ratings, wins, and losses for **{reset_count}** players.\n"
             "Player signup profiles were kept."
+        ),
+        COLOR_SUCCESS
+    )
+
+
+@bot.command()
+async def convertratingscale(ctx, confirmation: str = None):
+    if not await require_admin(ctx):
+        return
+
+    if confirmation != "CONFIRM":
+        await send_embed(
+            ctx,
+            "Rating Scale Conversion Requires Confirmation",
+            (
+                "This converts all saved 5v5 overall and role ratings from the old scale "
+                "to the new division scale.\n\n"
+                "To continue, run `!convertratingscale CONFIRM`."
+            ),
+            COLOR_WARNING
+        )
+        return
+
+    updated_count = convert_all_players_to_new_rating_scale()
+
+    synced_count = 0
+    conn = connect()
+    cursor = conn.cursor()
+    cursor.execute("SELECT discord_id FROM players")
+    rows = cursor.fetchall()
+    conn.close()
+
+    for (discord_id,) in rows:
+        player = get_player(discord_id)
+        member = ctx.guild.get_member(discord_id) if ctx.guild else None
+
+        if player and member:
+            await sync_member_rank_role(member, player["rating"])
+            synced_count += 1
+
+    player_queue.clear()
+    waitlist_queue.clear()
+    await update_queue_message()
+    await update_winrate_channel(ctx.guild)
+
+    await send_embed(
+        ctx,
+        "Rating Scale Converted",
+        (
+            f"Converted **{updated_count}** players to the new MMR scale.\n"
+            f"Synced rank roles for **{synced_count}** players.\n\n"
+            "The active queue and waitlist were cleared so everyone is using refreshed ratings."
         ),
         COLOR_SUCCESS
     )

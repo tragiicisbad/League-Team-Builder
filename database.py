@@ -205,11 +205,11 @@ def make_role_ratings(base_rating, primary_role, secondary_role):
     Preferred roles start higher; off-roles start lower.
     """
     ratings = {
-        "Top": base_rating - 250,
-        "Jungle": base_rating - 250,
-        "Mid": base_rating - 250,
-        "ADC": base_rating - 250,
-        "Support": base_rating - 250
+        "Top": max(0, base_rating - 250),
+        "Jungle": max(0, base_rating - 250),
+        "Mid": max(0, base_rating - 250),
+        "ADC": max(0, base_rating - 250),
+        "Support": max(0, base_rating - 250)
     }
 
     if primary_role == "Fill":
@@ -220,9 +220,9 @@ def make_role_ratings(base_rating, primary_role, secondary_role):
 
     if secondary_role == "Fill":
         for role in ratings:
-            ratings[role] = max(ratings[role], base_rating - 100)
+            ratings[role] = max(ratings[role], max(0, base_rating - 100))
     else:
-        ratings[secondary_role] = max(ratings[secondary_role], base_rating - 100)
+        ratings[secondary_role] = max(ratings[secondary_role], max(0, base_rating - 100))
 
     return ratings
 
