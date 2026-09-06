@@ -34,10 +34,6 @@ from database import (
     rollback_betting_settlement,
     refund_betting_match,
     get_bet_history,
-    get_mayram_player,
-    update_mayram_player_after_match,
-    save_mayram_match,
-    get_mayram_leaderboard,
     factory_reset_all_data
 )
 
@@ -71,8 +67,6 @@ RANK_ROLE_NAMES = [
     "Master", "Grandmaster", "Challenger"
 ]
 MAX_QUEUE_SIZE = 10
-MAYRAM_STARTING_RATING = 1000
-MAYRAM_RATING_CHANGE = 50
 BASE_RATING_CHANGE = 30
 MIN_RATING_CHANGE = 30
 MAX_RATING_CHANGE = 50
@@ -972,11 +966,6 @@ last_result_rollback = None
 winrate_message_id = None
 active_betting_id = None
 queue_test_mode = False
-last_mayram_blue_team = []
-last_mayram_red_team = []
-last_mayram_teams_message_id = None
-last_mayram_teams_channel_id = None
-active_mayram_betting_id = None
 persistent_views_registered = False
 
 
@@ -1538,73 +1527,6 @@ def build_queue_embed():
     return embed
 
 
-def mayram_team_lines(team):
-    return "\n".join(
-        f"**{player['name']}**  •  `{player['rating']}` rating"
-        for player in team
-    )
-
-
-def build_mayram_teams_embed():
-    blue_total = sum(player["rating"] for player in last_mayram_blue_team)
-    red_total = sum(player["rating"] for player in last_mayram_red_team)
-    diff = abs(blue_total - red_total)
-
-    embed = discord.Embed(
-        title="ARAM Mayhem Teams Generated",
-        color=COLOR_SUCCESS
-    )
-
-    embed.add_field(
-        name=f"Blue Team - {blue_total} Rating",
-        value=mayram_team_lines(last_mayram_blue_team),
-        inline=True
-    )
-
-    embed.add_field(
-        name=f"Red Team - {red_total} Rating",
-        value=mayram_team_lines(last_mayram_red_team),
-        inline=True
-    )
-
-    embed.add_field(
-        name="Balance Stats",
-        value=f"**Team Rating Difference:** {diff}",
-        inline=False
-    )
-
-    betting_id = globals().get("active_mayram_betting_id")
-
-    if betting_id is not None:
-        betting_match = get_betting_match(betting_id)
-
-        if betting_match:
-            status = betting_match["status"]
-            status_text = {
-                "open": f"Open - closes {betting_closes_timestamp(betting_match['closes_at'])}",
-                "closed": "Closed - waiting for result",
-                "settled": f"Settled - {str(betting_match.get('winner', '')).capitalize()} won",
-                "refunded": "Refunded"
-            }.get(status, status.title())
-
-            total_pool = betting_match["blue_pool"] + betting_match["red_pool"]
-
-            embed.add_field(
-                name=f"Betting #{betting_match['id']}",
-                value=(
-                    f"**Status:** {status_text}\n"
-                    f"**Blue Pool:** {format_coins(betting_match['blue_pool'])} coins\n"
-                    f"**Red Pool:** {format_coins(betting_match['red_pool'])} coins\n"
-                    f"**Total Pot:** {format_coins(total_pool)} coins\n"
-                    f"**Minimum Bet:** {format_coins(MIN_BET_AMOUNT)} coins"
-                ),
-                inline=False
-            )
-
-    embed.set_footer(text="Bet with the buttons below. Result buttons are posted in #mayram.")
-    return embed
-
-
 def fill_queue_with_test_players():
     global queue_test_mode
 
@@ -1853,40 +1775,7 @@ async def update_betting_message(betting_id):
         return False
 
 
-async def update_mayram_betting_message(betting_id):
-    """
-    Refreshes the ARAM Mayhem teams message so its betting pools and buttons stay current.
-    """
-    betting_match = get_betting_match(betting_id)
-
-    if not betting_match:
-        return False
-
-    channel_id = betting_match.get("channel_id")
-    message_id = betting_match.get("message_id")
-
-    if not channel_id or not message_id:
-        return False
-
-    channel = bot.get_channel(channel_id)
-
-    if channel is None:
-        return False
-
-    try:
-        msg = await channel.fetch_message(message_id)
-        view = BettingView(betting_id) if betting_match["status"] == "open" else None
-        await msg.edit(embed=build_mayram_teams_embed(), view=view)
-        return True
-    except Exception as e:
-        print(f"Could not update ARAM Mayhem betting message: {e}")
-        return False
-
-
 async def update_any_betting_message(betting_id):
-    if betting_id == active_mayram_betting_id:
-        return await update_mayram_betting_message(betting_id)
-
     return await update_betting_message(betting_id)
 
 
@@ -1937,38 +1826,6 @@ async def open_betting_for_current_match(guild=None):
     return betting_id
 
 
-async def open_betting_for_current_mayram_match(guild=None):
-    """
-    Creates a betting match for the latest ARAM Mayhem teams message.
-    """
-    global active_mayram_betting_id
-
-    if not last_mayram_blue_team or not last_mayram_red_team:
-        return None
-
-    if last_mayram_teams_channel_id is None or last_mayram_teams_message_id is None:
-        print("Could not open ARAM Mayhem betting: teams message has not been posted yet.")
-        return None
-
-    closes_at = (datetime.now() + timedelta(seconds=BETTING_WINDOW_SECONDS)).isoformat(timespec="seconds")
-
-    betting_id = create_betting_match(
-        blue_team=betting_team_payload(last_mayram_blue_team),
-        red_team=betting_team_payload(last_mayram_red_team),
-        closes_at=closes_at,
-        channel_id=last_mayram_teams_channel_id,
-        message_id=last_mayram_teams_message_id
-    )
-
-    active_mayram_betting_id = betting_id
-
-    await update_mayram_betting_message(betting_id)
-
-    bot.loop.create_task(close_betting_after_delay(betting_id, BETTING_WINDOW_SECONDS))
-
-    return betting_id
-
-
 async def refund_active_betting(reason="Betting refunded."):
     """
     Refunds the current betting match when teams change before a result is recorded.
@@ -1981,22 +1838,6 @@ async def refund_active_betting(reason="Betting refunded."):
     refunded_count = refund_betting_match(active_betting_id)
     await update_betting_message(active_betting_id)
     active_betting_id = None
-
-    return refunded_count
-
-
-async def refund_active_mayram_betting(reason="Betting refunded."):
-    """
-    Refunds the current ARAM Mayhem betting match when teams are cleared or ignored.
-    """
-    global active_mayram_betting_id
-
-    if active_mayram_betting_id is None:
-        return 0
-
-    refunded_count = refund_betting_match(active_mayram_betting_id)
-    await update_mayram_betting_message(active_mayram_betting_id)
-    active_mayram_betting_id = None
 
     return refunded_count
 
@@ -2021,30 +1862,6 @@ async def settle_active_betting(winner):
 
     result = settle_betting_match(active_betting_id, winner)
     await update_betting_message(active_betting_id)
-
-    return result
-
-
-async def settle_active_mayram_betting(winner):
-    """
-    Closes any open ARAM Mayhem betting window, pays winners, and refreshes the teams message.
-    """
-    global active_mayram_betting_id
-
-    if active_mayram_betting_id is None:
-        return None
-
-    betting_match = get_betting_match(active_mayram_betting_id)
-
-    if not betting_match:
-        active_mayram_betting_id = None
-        return None
-
-    if betting_match["status"] == "open":
-        close_betting_match(active_mayram_betting_id)
-
-    result = settle_betting_match(active_mayram_betting_id, winner)
-    await update_mayram_betting_message(active_mayram_betting_id)
 
     return result
 
@@ -2580,17 +2397,6 @@ async def profile(ctx, member: discord.Member = None):
     for role in ROLES:
         role_lines.append(f"{role_emoji(role)} **{role}:** {player['role_ratings'][role]}")
 
-    mayram_player = get_mayram_player(member.id)
-
-    if mayram_player:
-        mayram_rating = mayram_player["rating"]
-        mayram_wins = mayram_player["wins"]
-        mayram_losses = mayram_player["losses"]
-    else:
-        mayram_rating = MAYRAM_STARTING_RATING
-        mayram_wins = 0
-        mayram_losses = 0
-
     embed = discord.Embed(title=f"{player['name']}'s Profile", color=COLOR_PROFILE)
 
     calculated_overall = calculate_overall_from_selected_roles(player)
@@ -2600,11 +2406,6 @@ async def profile(ctx, member: discord.Member = None):
     embed.add_field(name="Overall Rating", value=str(calculated_overall), inline=True)
     embed.add_field(name="Record", value=f"{player['wins']}W / {player['losses']}L", inline=True)
     embed.add_field(name="Current Streak", value=streak_display(player.get("streak", 0)), inline=True)
-    embed.add_field(
-        name="ARAM Mayhem",
-        value=f"**Rating:** {mayram_rating}\n**Record:** {mayram_wins}W / {mayram_losses}L",
-        inline=True
-    )
     embed.add_field(
         name="Preferred Roles",
         value=(
@@ -3500,8 +3301,6 @@ async def factoryreset(ctx, confirmation: str = None):
     global queue_locked, last_blue_team, last_red_team, last_teams_message_id, last_teams_channel_id
     global last_match_history_message_id, last_match_history_channel_id, last_result_rollback
     global queue_test_mode, active_betting_id
-    global last_mayram_blue_team, last_mayram_red_team
-    global last_mayram_teams_message_id, last_mayram_teams_channel_id, active_mayram_betting_id
 
     if not await require_admin(ctx):
         return
@@ -3512,7 +3311,7 @@ async def factoryreset(ctx, confirmation: str = None):
             "Factory Reset Requires Confirmation",
             (
                 "This permanently deletes all saved signups, ratings, coins, match history, "
-                "season archives, ARAM Mayhem data, and betting records.\n\n"
+                "season archives, and betting records.\n\n"
                 "To continue, run `!factoryreset CONFIRM`."
             ),
             COLOR_WARNING
@@ -3536,12 +3335,6 @@ async def factoryreset(ctx, confirmation: str = None):
     last_result_rollback = None
     active_betting_id = None
 
-    last_mayram_blue_team = []
-    last_mayram_red_team = []
-    last_mayram_teams_message_id = None
-    last_mayram_teams_channel_id = None
-    active_mayram_betting_id = None
-
     await delete_queue_message()
     await update_winrate_channel(ctx.guild)
 
@@ -3555,8 +3348,6 @@ async def factoryreset(ctx, confirmation: str = None):
             f"5v5 signups removed: **{counts['players']}**\n"
             f"5v5 matches removed: **{counts['matches']}**\n"
             f"Season archive records removed: **{counts['season_player_history'] + counts['season_match_history']}**\n"
-            f"ARAM Mayhem profiles removed: **{counts['mayram_players']}**\n"
-            f"ARAM Mayhem matches removed: **{counts['mayram_matches']}**\n"
             f"Betting records removed: **{counts['betting_matches'] + counts['bets'] + counts['betting_payouts']}**\n\n"
             "All players will need to use `/signup` again before joining the 5v5 queue."
         ),
@@ -3847,81 +3638,6 @@ class ResultView(discord.ui.View):
                 embed=discord.Embed(
                     title="Result Error",
                     description="Something went wrong while recording the match result. Check Railway logs.",
-                    color=COLOR_ERROR
-                )
-            )
-
-    @discord.ui.button(
-        label="Blue Victory",
-        style=discord.ButtonStyle.primary,
-        emoji="🔵"
-    )
-    async def blue_victory(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.handle_result(interaction, "blue")
-
-    @discord.ui.button(
-        label="Red Victory",
-        style=discord.ButtonStyle.danger,
-        emoji="🔴"
-    )
-    async def red_victory(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.handle_result(interaction, "red")
-
-
-class MayramResultView(discord.ui.View):
-    """
-    Blue/Red winner buttons posted in #mayram for ARAM Mayhem result reporting.
-    """
-    def __init__(self):
-        super().__init__(timeout=None)
-        self.result_recorded = False
-
-    def disable_all_buttons(self):
-        for child in self.children:
-            child.disabled = True
-
-    async def handle_result(self, interaction: discord.Interaction, winner: str):
-        if not is_admin_member(interaction.user):
-            await interaction.response.send_message(
-                "Only admins can report ARAM Mayhem results.",
-                ephemeral=True
-            )
-            return
-
-        if self.result_recorded:
-            await interaction.response.send_message(
-                "A result has already been recorded for this ARAM Mayhem match.",
-                ephemeral=True
-            )
-            return
-
-        self.result_recorded = True
-        self.disable_all_buttons()
-
-        await interaction.response.edit_message(view=self)
-
-        ctx = InteractionResultContext(interaction)
-        result_command = bot.get_command("mayramresult")
-
-        if result_command is None:
-            await interaction.followup.send(
-                embed=discord.Embed(
-                    title="Result Error",
-                    description="The ARAM Mayhem result command could not be found.",
-                    color=COLOR_ERROR
-                )
-            )
-            return
-
-        try:
-            await result_command.callback(ctx, winner)
-        except Exception as e:
-            print(f"ARAM Mayhem result button error: {e}")
-
-            await interaction.followup.send(
-                embed=discord.Embed(
-                    title="Result Error",
-                    description="Something went wrong while recording the ARAM Mayhem result. Check Railway logs.",
                     color=COLOR_ERROR
                 )
             )
@@ -4386,102 +4102,6 @@ async def result(ctx, winner: str):
 
 
 @bot.command()
-async def mayramresult(ctx, winner: str):
-    global last_mayram_blue_team, last_mayram_red_team
-    global last_mayram_teams_message_id, last_mayram_teams_channel_id, active_mayram_betting_id
-
-    if not await require_admin(ctx):
-        return
-
-    winner = winner.lower()
-
-    if winner not in ["blue", "red"]:
-        await send_embed(ctx, "Invalid Result", "Use `!mayramresult blue` or `!mayramresult red`.", COLOR_ERROR)
-        return
-
-    if not last_mayram_blue_team or not last_mayram_red_team:
-        await send_embed(ctx, "No ARAM Mayhem Teams", "There are no active ARAM Mayhem teams to record.", COLOR_WARNING)
-        return
-
-    blue_rating = sum(player["rating"] for player in last_mayram_blue_team)
-    red_rating = sum(player["rating"] for player in last_mayram_red_team)
-
-    if winner == "blue":
-        winning_team = last_mayram_blue_team
-        losing_team = last_mayram_red_team
-    else:
-        winning_team = last_mayram_red_team
-        losing_team = last_mayram_blue_team
-
-    for player in winning_team:
-        update_mayram_player_after_match(player["discord_id"], won=True, rating_change=MAYRAM_RATING_CHANGE)
-
-    for player in losing_team:
-        update_mayram_player_after_match(player["discord_id"], won=False, rating_change=MAYRAM_RATING_CHANGE)
-
-    save_mayram_match(
-        winner=winner,
-        blue_team=[player["name"] for player in last_mayram_blue_team],
-        red_team=[player["name"] for player in last_mayram_red_team],
-        blue_rating=blue_rating,
-        red_rating=red_rating,
-        rating_change=MAYRAM_RATING_CHANGE
-    )
-
-    betting_result = await settle_active_mayram_betting(winner)
-
-    played_ids = {player["discord_id"] for player in last_mayram_blue_team + last_mayram_red_team}
-    coin_rewards = award_match_coin_rewards(played_ids)
-
-    embed = discord.Embed(
-        title=f"ARAM Mayhem Result - {winner.capitalize()} Wins",
-        color=COLOR_BLUE_TEAM if winner == "blue" else COLOR_RED_TEAM
-    )
-
-    embed.add_field(
-        name="Winner Changes",
-        value="\n".join(f"**{player['name']}** `+{MAYRAM_RATING_CHANGE}`" for player in winning_team),
-        inline=True
-    )
-
-    embed.add_field(
-        name="Loser Changes",
-        value="\n".join(f"**{player['name']}** `-{MAYRAM_RATING_CHANGE}`" for player in losing_team),
-        inline=True
-    )
-
-    if betting_result and betting_result.get("settled"):
-        embed.add_field(
-            name="Betting",
-            value=(
-                f"Total Pot: **{format_coins(betting_result.get('total_pool', 0))}** coins\n"
-                f"Winner Pool: **{format_coins(betting_result.get('winning_pool', 0))}** coins\n"
-                f"Payouts: **{len(betting_result.get('payouts', []))}**"
-            ),
-            inline=False
-        )
-
-    signed_count = len(coin_rewards) - len(played_ids)
-    embed.add_field(
-        name="Coin Rewards",
-        value=(
-            f"Players in match: **+30,000** coins each\n"
-            f"Other signed-up players: **+1,000** coins each\n"
-            f"Rewarded: **{len(played_ids)}** players + **{signed_count}** signed-up players"
-        ),
-        inline=False
-    )
-
-    last_mayram_blue_team = []
-    last_mayram_red_team = []
-    last_mayram_teams_message_id = None
-    last_mayram_teams_channel_id = None
-    active_mayram_betting_id = None
-
-    await ctx.send(embed=embed)
-
-
-@bot.command()
 async def rollback(ctx):
     """
     Reverses the most recent result recorded during this bot process.
@@ -4616,7 +4236,6 @@ async def resetcoins(ctx):
         return
 
     refunded_5v5 = await refund_active_betting("Coin balances were reset.")
-    refunded_mayram = await refund_active_mayram_betting("Coin balances were reset.")
     reset_count = reset_all_player_coins()
 
     await send_embed(
@@ -4624,8 +4243,7 @@ async def resetcoins(ctx):
         "Coins Reset",
         (
             f"Reset coin balances for **{reset_count}** players.\n"
-            f"Refunded active 5v5 bets: **{refunded_5v5}**\n"
-            f"Refunded active ARAM Mayhem bets: **{refunded_mayram}**"
+            f"Refunded active bets: **{refunded_5v5}**"
         ),
         COLOR_SUCCESS
     )
@@ -4657,38 +4275,6 @@ async def coinleaderboard(ctx, page: int = 1):
     )
 
     embed.set_footer(text=f"Use !coinleaderboard {page + 1} for the next page.")
-    await ctx.send(embed=embed)
-
-
-@bot.command()
-async def mayramleaderboard(ctx, page: int = 1):
-    if page < 1:
-        page = 1
-
-    per_page = 10
-    offset = (page - 1) * per_page
-    rows = get_mayram_leaderboard(per_page, offset)
-
-    if not rows:
-        await send_embed(ctx, "ARAM Mayhem Leaderboard", f"No players found on page {page}.", COLOR_WARNING)
-        return
-
-    lines = []
-
-    for index, (name, rating, wins, losses) in enumerate(rows, start=offset + 1):
-        games_played = wins + losses
-        medal = "🥇" if index == 1 else "🥈" if index == 2 else "🥉" if index == 3 else f"**#{index}**"
-        lines.append(
-            f"{medal} **{name}** - `{rating}` rating  •  `{wins}W - {losses}L`  •  `{games_played} GP`"
-        )
-
-    embed = discord.Embed(
-        title=f"ARAM Mayhem Leaderboard - Page {page}",
-        description="\n".join(lines),
-        color=COLOR_PROFILE
-    )
-
-    embed.set_footer(text=f"Use !mayramleaderboard {page + 1} for the next page.")
     await ctx.send(embed=embed)
 
 
