@@ -20,6 +20,7 @@ from database import (
     get_match_history,
     drop_all_role_ratings_to_nearest_hundred,
     full_season_rollover,
+    get_all_player_ids,
     get_player_coin_balance,
     reset_all_player_coins,
     add_coins,
@@ -52,6 +53,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 JOIN_EMOJI = "✅"
 STAFF_ROLE_NAMES = ["Customs Admin", "Moderator"]
+VERIFIED_ROLE_NAME = "Verified"
 GAMETIME_CHANNEL_NAME = "gametime"
 PROMOTION_CHANNEL_NAME = "general"
 MATCH_HISTORY_CHANNEL_NAME = "match-history"
@@ -80,6 +82,21 @@ ROLE_PENALTY_MULTIPLIER = 1
 TEAM_RATING_DIFF_MULTIPLIER = 1
 
 ROLES = ["Top", "Jungle", "Mid", "ADC", "Support"]
+QUEUE_ROLE_NAMES = ["Top", "Jungle", "Mid", "Bot", "Support", "Fill"]
+QUEUE_ROLE_BY_SELECTION = {
+    "Top": "Top",
+    "Jungle": "Jungle",
+    "Mid": "Mid",
+    "ADC": "Bot",
+    "Support": "Support",
+    "Fill": "Fill"
+}
+ROLE_DISPLAY_NAMES = {
+    "ADC": "Bot"
+}
+ROLE_ALIASES = {
+    "Bot": "ADC"
+}
 
 COLOR_QUEUE = discord.Color.blue()
 COLOR_SUCCESS = discord.Color.green()
@@ -182,6 +199,10 @@ def role_emoji(role):
     return ROLE_EMOJIS.get(role, "")
 
 
+def role_display_name(role):
+    return ROLE_DISPLAY_NAMES.get(role, role)
+
+
 def streak_display(streak):
     if streak > 0:
         return f"🔥 {streak}W"
@@ -225,7 +246,8 @@ def rank_option(rank):
 
 def role_option(role, description=None):
     return discord.SelectOption(
-        label=role,
+        label=role_display_name(role),
+        value=role,
         emoji=option_emoji(role_emoji(role)),
         description=description
     )
@@ -234,7 +256,7 @@ def role_option(role, description=None):
 def avoid_role_display(role):
     if not role or role == "None":
         return "None"
-    return f"{role_emoji(role)} {role}"
+    return f"{role_emoji(role)} {role_display_name(role)}"
 
 
 def normalize_rank(rank):
@@ -252,10 +274,26 @@ def normalize_rank(rank):
 
 
 def normalize_role(role):
+    normalized_input = " ".join(role.split())
+
     for valid_role in ROLES:
-        if valid_role.lower() == role.lower():
+        if valid_role.lower() == normalized_input.lower():
             return valid_role
+
+    for alias, canonical_role in ROLE_ALIASES.items():
+        if alias.lower() == normalized_input.lower():
+            return canonical_role
+
     return None
+
+
+def valid_role_names(include_none=False):
+    names = [role_display_name(role) for role in ROLES]
+
+    if include_none:
+        names.append("None")
+
+    return ", ".join(names)
 
 
 def rank_for_rating(rating):
@@ -365,6 +403,59 @@ async def sync_member_rank_role(member, overall_rating):
         print("Could not update rank role: missing Manage Roles permission or role hierarchy issue.")
     except Exception as e:
         print(f"Could not update rank role: {e}")
+
+
+async def sync_member_primary_queue_role(member, primary_role):
+    """
+    Updates the Discord queue role for a member's saved primary role.
+    The in-bot ADC selection maps to the Discord role named Bot.
+    """
+    if member is None or member.guild is None:
+        return False
+
+    role_name_to_add = QUEUE_ROLE_BY_SELECTION.get(primary_role)
+
+    if role_name_to_add is None:
+        print(f"Unknown primary queue role: {primary_role}")
+        return False
+
+    queue_roles = [
+        role for role in member.guild.roles
+        if role.name in QUEUE_ROLE_NAMES
+    ]
+
+    role_to_add = discord.utils.get(member.guild.roles, name=role_name_to_add)
+
+    if role_to_add is None:
+        print(f"Queue role not found: {role_name_to_add}")
+        return False
+
+    roles_to_remove = [
+        role for role in queue_roles
+        if role in member.roles and role.name != role_name_to_add
+    ]
+
+    try:
+        if roles_to_remove:
+            await member.remove_roles(
+                *roles_to_remove,
+                reason="League bot primary queue role sync"
+            )
+
+        if role_to_add not in member.roles:
+            await member.add_roles(
+                role_to_add,
+                reason="League bot primary queue role sync"
+            )
+
+        return True
+
+    except discord.Forbidden:
+        print("Could not update queue role: missing Manage Roles permission or role hierarchy issue.")
+    except Exception as e:
+        print(f"Could not update queue role: {e}")
+
+    return False
 
 
 def check_role_promotion(player, assigned_role, rating_change):
@@ -539,8 +630,8 @@ def build_edit_ratings_embed(member, player):
     embed.add_field(
         name="Queue Roles",
         value=(
-            f"Primary: {role_emoji(player['primary_role'])} **{player['primary_role']}**\n"
-            f"Secondary: {role_emoji(player['secondary_role'])} **{player['secondary_role']}**\n"
+            f"Primary: {role_emoji(player['primary_role'])} **{role_display_name(player['primary_role'])}**\n"
+            f"Secondary: {role_emoji(player['secondary_role'])} **{role_display_name(player['secondary_role'])}**\n"
             f"Avoid: **{avoid_role_display(player.get('avoided_role', 'None'))}**"
         ),
         inline=False
@@ -1301,7 +1392,7 @@ def build_teams_embed(title="Balanced Teams Generated", description=None):
 
 def simple_match_history_team_lines(team):
     return "\n".join(
-        f"{role_emoji(player['assigned_role'])} **{player['assigned_role']}** — {player['name']}"
+        f"{role_emoji(player['assigned_role'])} **{role_display_name(player['assigned_role'])}** — {player['name']}"
         for player in team
     )
 
@@ -2202,18 +2293,26 @@ class SignupView(discord.ui.View):
 
             new_overall = update_overall_rating_from_selected_roles(user_id)
             await sync_member_rank_role(interaction.user, new_overall)
+            queue_role_synced = await sync_member_primary_queue_role(interaction.user, primary_role)
 
             refresh_player_in_queues(user_id)
             await update_queue_message()
 
+            queue_role_text = (
+                f"\nPrimary Discord Role: **{QUEUE_ROLE_BY_SELECTION[primary_role]}**"
+                if queue_role_synced
+                else "\nPrimary Discord Role: could not be updated. Ask staff to check my role permissions."
+            )
+
             await interaction.response.send_message(
                 (
                     "Queue roles updated.\n\n"
-                    f"Primary: {role_emoji(primary_role)} **{primary_role}**\n"
-                    f"Secondary: {role_emoji(secondary_role)} **{secondary_role}**\n"
+                    f"Primary: {role_emoji(primary_role)} **{role_display_name(primary_role)}**\n"
+                    f"Secondary: {role_emoji(secondary_role)} **{role_display_name(secondary_role)}**\n"
                     f"Avoid: **{avoid_role_display(avoided_role)}**\n"
                     f"Overall Rating: **{new_overall}** "
                     f"({rank_emoji(rank_for_rating(new_overall))} **{rank_for_rating(new_overall)}**)"
+                    f"{queue_role_text}"
                 ),
                 ephemeral=True
             )
@@ -2231,14 +2330,22 @@ class SignupView(discord.ui.View):
 
         new_overall = update_overall_rating_from_selected_roles(user_id)
         await sync_member_rank_role(interaction.user, new_overall)
+        queue_role_synced = await sync_member_primary_queue_role(interaction.user, primary_role)
+
+        queue_role_text = (
+            f"\nPrimary Discord Role: **{QUEUE_ROLE_BY_SELECTION[primary_role]}**"
+            if queue_role_synced
+            else "\nPrimary Discord Role: could not be updated. Ask staff to check my role permissions."
+        )
 
         await interaction.response.send_message(
             (
                 "Signup complete. Your queue roles were saved.\n\n"
-                f"Primary: {role_emoji(primary_role)} **{primary_role}**\n"
-                f"Secondary: {role_emoji(secondary_role)} **{secondary_role}**\n"
+                f"Primary: {role_emoji(primary_role)} **{role_display_name(primary_role)}**\n"
+                f"Secondary: {role_emoji(secondary_role)} **{role_display_name(secondary_role)}**\n"
                 f"Avoid: **{avoid_role_display(avoided_role)}**\n\n"
                 "Ratings are now set by staff using `!edit @player`. Players with 2600+ overall rating will have their secondary queue role treated as Fill."
+                f"{queue_role_text}"
             ),
             ephemeral=True
         )
@@ -2249,7 +2356,7 @@ class SignupView(discord.ui.View):
             role_option("Top", "Primary solo lane"),
             role_option("Jungle", "Primary jungle"),
             role_option("Mid", "Primary mid lane"),
-            role_option("ADC", "Primary bot carry"),
+            role_option("ADC", "Primary bot lane"),
             role_option("Support", "Primary support"),
             role_option("Fill", "Comfortable filling")
         ]
@@ -2277,7 +2384,7 @@ class SignupView(discord.ui.View):
             role_option("Top", "Secondary solo lane"),
             role_option("Jungle", "Secondary jungle"),
             role_option("Mid", "Secondary mid lane"),
-            role_option("ADC", "Secondary bot carry"),
+            role_option("ADC", "Secondary bot lane"),
             role_option("Support", "Secondary support"),
             role_option("Fill", "Can fill if needed")
         ]
@@ -2306,7 +2413,7 @@ class SignupView(discord.ui.View):
             role_option("Top", "Avoid top if possible"),
             role_option("Jungle", "Avoid jungle if possible"),
             role_option("Mid", "Avoid mid if possible"),
-            role_option("ADC", "Avoid ADC if possible"),
+            role_option("ADC", "Avoid bot if possible"),
             role_option("Support", "Avoid support if possible")
         ]
     )
@@ -2359,18 +2466,26 @@ class RoleChangeView(discord.ui.View):
 
         new_overall = update_overall_rating_from_selected_roles(interaction.user.id)
         await sync_member_rank_role(interaction.user, new_overall)
+        queue_role_synced = await sync_member_primary_queue_role(interaction.user, primary_role)
 
         refresh_player_in_queues(interaction.user.id)
         await update_queue_message()
 
+        queue_role_text = (
+            f"\nPrimary Discord Role: **{QUEUE_ROLE_BY_SELECTION[primary_role]}**"
+            if queue_role_synced
+            else "\nPrimary Discord Role: could not be updated. Ask staff to check my role permissions."
+        )
+
         await interaction.response.send_message(
             (
                 "Role preferences updated without resetting your role ratings or match history.\n\n"
-                f"Primary: {role_emoji(primary_role)} **{primary_role}**\n"
-                f"Secondary: {role_emoji(secondary_role)} **{secondary_role}**\n"
+                f"Primary: {role_emoji(primary_role)} **{role_display_name(primary_role)}**\n"
+                f"Secondary: {role_emoji(secondary_role)} **{role_display_name(secondary_role)}**\n"
                 f"Avoid: **{avoid_role_display(avoided_role)}**\n"
                 f"New Overall Rating: **{new_overall}** "
                 f"({rank_emoji(rank_for_rating(new_overall))} **{rank_for_rating(new_overall)}**)"
+                f"{queue_role_text}"
             ),
             ephemeral=True
         )
@@ -2381,7 +2496,7 @@ class RoleChangeView(discord.ui.View):
             role_option("Top", "Primary solo lane"),
             role_option("Jungle", "Primary jungle"),
             role_option("Mid", "Primary mid lane"),
-            role_option("ADC", "Primary bot carry"),
+            role_option("ADC", "Primary bot lane"),
             role_option("Support", "Primary support"),
             role_option("Fill", "Comfortable filling")
         ]
@@ -2401,7 +2516,7 @@ class RoleChangeView(discord.ui.View):
             role_option("Top", "Secondary solo lane"),
             role_option("Jungle", "Secondary jungle"),
             role_option("Mid", "Secondary mid lane"),
-            role_option("ADC", "Secondary bot carry"),
+            role_option("ADC", "Secondary bot lane"),
             role_option("Support", "Secondary support"),
             role_option("Fill", "Can fill if needed")
         ]
@@ -2422,7 +2537,7 @@ class RoleChangeView(discord.ui.View):
             role_option("Top", "Avoid top if possible"),
             role_option("Jungle", "Avoid jungle if possible"),
             role_option("Mid", "Avoid mid if possible"),
-            role_option("ADC", "Avoid ADC if possible"),
+            role_option("ADC", "Avoid bot if possible"),
             role_option("Support", "Avoid support if possible")
         ]
     )
@@ -2495,7 +2610,7 @@ async def signup(ctx):
             f"{role_emoji('Top')} **Top**\n"
             f"{role_emoji('Jungle')} **Jungle**\n"
             f"{role_emoji('Mid')} **Mid**\n"
-            f"{role_emoji('ADC')} **ADC**\n"
+            f"{role_emoji('ADC')} **Bot**\n"
             f"{role_emoji('Support')} **Support**\n"
             f"{role_emoji('Fill')} **Fill**"
         ),
@@ -2549,8 +2664,8 @@ async def changeroles(ctx):
     embed.add_field(
         name="Current Roles",
         value=(
-            f"Primary: {role_emoji(player['primary_role'])} **{player['primary_role']}**\n"
-            f"Secondary: {role_emoji(player['secondary_role'])} **{player['secondary_role']}**\n"
+            f"Primary: {role_emoji(player['primary_role'])} **{role_display_name(player['primary_role'])}**\n"
+            f"Secondary: {role_emoji(player['secondary_role'])} **{role_display_name(player['secondary_role'])}**\n"
             f"Avoid: **{avoid_role_display(player.get('avoided_role', 'None'))}**"
         ),
         inline=False
@@ -2594,8 +2709,8 @@ async def profile(ctx, member: discord.Member = None):
     embed.add_field(
         name="Preferred Roles",
         value=(
-            f"{role_emoji(player['primary_role'])} {player['primary_role']}\n"
-            f"{role_emoji(player['secondary_role'])} {player['secondary_role']}"
+            f"{role_emoji(player['primary_role'])} {role_display_name(player['primary_role'])}\n"
+            f"{role_emoji(player['secondary_role'])} {role_display_name(player['secondary_role'])}"
         ),
         inline=False
     )
@@ -3195,11 +3310,10 @@ async def setrolerating(ctx, member: discord.Member, role: str, rating: int):
     normalized_role = normalize_role(role)
 
     if not normalized_role:
-        valid_roles = ", ".join(ROLES)
         await send_embed(
             ctx,
             "Invalid Role",
-            f"Valid roles are: {valid_roles}",
+            f"Valid roles are: {valid_role_names()}",
             COLOR_ERROR
         )
         return
@@ -3224,7 +3338,7 @@ async def setrolerating(ctx, member: discord.Member, role: str, rating: int):
         ctx,
         "Role Rating Updated",
         (
-            f"{role_emoji(normalized_role)} **{member.display_name}'s {normalized_role}** rating is now **{rating}**.\n"
+            f"{role_emoji(normalized_role)} **{member.display_name}'s {role_display_name(normalized_role)}** rating is now **{rating}**.\n"
             f"Overall rating is now **{new_overall}** "
             f"({rank_emoji(rank_for_rating(new_overall))} **{rank_for_rating(new_overall)}**)."
         ),
@@ -3254,11 +3368,10 @@ async def setavoidrole(ctx, member: discord.Member, *, role: str):
         normalized_role = normalize_role(role)
 
     if not normalized_role:
-        valid_roles = ", ".join(ROLES + ["None"])
         await send_embed(
             ctx,
             "Invalid Role",
-            f"Valid avoided roles are: {valid_roles}",
+            f"Valid avoided roles are: {valid_role_names(include_none=True)}",
             COLOR_ERROR
         )
         return
@@ -3628,6 +3741,65 @@ async def syncrankroles(ctx):
 
 
 
+@bot.command(aliases=["cleanupverified", "removeunverified"])
+async def removeunverifiedsignups(ctx):
+    if not await require_admin(ctx):
+        return
+
+    verified_role = discord.utils.get(ctx.guild.roles, name=VERIFIED_ROLE_NAME) if ctx.guild else None
+
+    if verified_role is None:
+        await send_embed(
+            ctx,
+            "Verified Role Missing",
+            f"I could not find a role named `{VERIFIED_ROLE_NAME}`.",
+            COLOR_ERROR
+        )
+        return
+
+    signed_up_ids = set(get_all_player_ids())
+    removed_count = 0
+    skipped_count = 0
+    failed_members = []
+
+    async for member in ctx.guild.fetch_members(limit=None):
+        if member.bot or verified_role not in member.roles:
+            continue
+
+        if member.id in signed_up_ids:
+            skipped_count += 1
+            continue
+
+        try:
+            await member.remove_roles(
+                verified_role,
+                reason="League bot signup verification cleanup"
+            )
+            removed_count += 1
+        except discord.Forbidden:
+            failed_members.append(member.display_name)
+        except Exception as e:
+            print(f"Could not remove Verified from {member} ({member.id}): {e}")
+            failed_members.append(member.display_name)
+
+    failed_text = ""
+    if failed_members:
+        preview = ", ".join(failed_members[:10])
+        extra = "" if len(failed_members) <= 10 else f" and {len(failed_members) - 10} more"
+        failed_text = f"\nFailed to update: **{preview}{extra}**"
+
+    await send_embed(
+        ctx,
+        "Verified Role Cleanup Complete",
+        (
+            f"Removed `{VERIFIED_ROLE_NAME}` from **{removed_count}** members who have not used `/signup`.\n"
+            f"Kept `{VERIFIED_ROLE_NAME}` on **{skipped_count}** signed-up members."
+            f"{failed_text}"
+        ),
+        COLOR_SUCCESS if not failed_members else COLOR_WARNING
+    )
+
+
 @bot.command()
 async def removeplayer(ctx, *, target: str):
     if not await require_admin(ctx):
@@ -3803,7 +3975,7 @@ class EditRatingsView(discord.ui.View):
     async def mid_rating_select(self, interaction: discord.Interaction, select: discord.ui.Select):
         await self.set_role_rating(interaction, "Mid", int(select.values[0]))
 
-    @discord.ui.select(placeholder="Set ADC rating", options=rating_select_options())
+    @discord.ui.select(placeholder="Set Bot rating", options=rating_select_options())
     async def adc_rating_select(self, interaction: discord.Interaction, select: discord.ui.Select):
         await self.set_role_rating(interaction, "ADC", int(select.values[0]))
 
@@ -4004,7 +4176,7 @@ async def swap(ctx, player_one_arg: str, player_two_arg: str):
 
     else:
         # Cross-team swap: players switch teams, but the role slots stay on each side.
-        # This keeps each team at one Top, one Jungle, one Mid, one ADC, and one Support.
+        # This keeps each team at one Top, one Jungle, one Mid, one Bot, and one Support.
         team_one[index_one], team_two[index_two] = team_two[index_two], team_one[index_one]
 
         team_one[index_one]["assigned_role"] = player_one_old_role
@@ -4218,8 +4390,8 @@ async def result(ctx, winner: str):
 
         loser_changes.append((player, abs(player_change)))
 
-    blue_names = [f"{role_emoji(p['assigned_role'])} {p['assigned_role']}: {p['name']}" for p in last_blue_team]
-    red_names = [f"{role_emoji(p['assigned_role'])} {p['assigned_role']}: {p['name']}" for p in last_red_team]
+    blue_names = [f"{role_emoji(p['assigned_role'])} {role_display_name(p['assigned_role'])}: {p['name']}" for p in last_blue_team]
+    red_names = [f"{role_emoji(p['assigned_role'])} {role_display_name(p['assigned_role'])}: {p['name']}" for p in last_red_team]
 
     save_match(
         winner=winner,
@@ -4646,7 +4818,7 @@ def history_team_contains_player(team, discord_id, display_name=None):
 
 def player_team_history_lines(team):
     return "\n".join(
-        f"{role_emoji(player.get('assigned_role', ''))} **{player.get('assigned_role', 'Unknown')}** — {player.get('name', 'Unknown Player')}"
+        f"{role_emoji(player.get('assigned_role', ''))} **{role_display_name(player.get('assigned_role', 'Unknown'))}** — {player.get('name', 'Unknown Player')}"
         for player in team
     )
 
@@ -4807,8 +4979,8 @@ def add_winrate_rows_to_embed(embed, rows, offset):
             name=f"{medal} {rank_emoji(current_rank)} {name}",
             value=(
                 f"`{winrate_percent}% WR`  •  `{wins}W - {losses}L`  •  `{games_played} GP`\n"
-                f"{role_emoji(primary_role)} {primary_role} / "
-                f"{role_emoji(secondary_role)} {secondary_role}  •  `{rating}` rating"
+                f"{role_emoji(primary_role)} {role_display_name(primary_role)} / "
+                f"{role_emoji(secondary_role)} {role_display_name(secondary_role)}  •  `{rating}` rating"
                 f"  •  `{format_season_rating_change(season_rating_change)}` season"
             ),
             inline=False
@@ -4982,7 +5154,7 @@ async def leaderboard_page(ctx, page=1):
             name=f"`#{index}` {rank_emoji(current_rank)} {name}",
             value=(
                 f"**Rating:** `{rating}`  •  **Record:** `{wins}W - {losses}L`  •  **Games:** `{games_played}`\n"
-                f"**Roles:** {role_emoji(primary_role)} {primary_role} / {role_emoji(secondary_role)} {secondary_role}"
+                f"**Roles:** {role_emoji(primary_role)} {role_display_name(primary_role)} / {role_emoji(secondary_role)} {role_display_name(secondary_role)}"
             ),
             inline=False
         )
