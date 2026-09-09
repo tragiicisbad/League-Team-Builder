@@ -80,6 +80,9 @@ LANE_OVER_CAP_MULTIPLIER = 35
 LANE_TOTAL_DIFF_MULTIPLIER = 2
 ROLE_PENALTY_MULTIPLIER = 1
 TEAM_RATING_DIFF_MULTIPLIER = 1
+EDIT_RATING_MIN = 1000
+EDIT_RATING_MAX = 5800
+EDIT_RATING_STEP = 200
 
 ROLES = ["Top", "Jungle", "Mid", "ADC", "Support"]
 QUEUE_ROLE_NAMES = ["Top", "Jungle", "Mid", "Bot", "Support", "Fill"]
@@ -590,12 +593,21 @@ def update_player_role_rating_manual(discord_id, role, rating):
 def rating_select_options():
     return [
         discord.SelectOption(
-            label=f"{rank_for_rating(rating)} - {rating}",
+            label=f"{rating_select_rank_label(rating)} - {rating}",
             value=str(rating),
-            description=f"Set rating to {rank_for_rating(rating)}"
+            description=f"Set rating to {rating_select_rank_label(rating)}"
         )
-        for rating in range(0, 2801, 200)
+        for rating in range(EDIT_RATING_MIN, EDIT_RATING_MAX + 1, EDIT_RATING_STEP)
     ]
+
+
+def rating_select_rank_label(rating):
+    rank = rank_for_rating(rating)
+
+    if rank == "Master" and rating > RANK_RATINGS["Master"]:
+        return f"Master +{rating - RANK_RATINGS['Master']}"
+
+    return rank
 
 
 def build_edit_ratings_embed(member, player):
@@ -605,8 +617,8 @@ def build_edit_ratings_embed(member, player):
     embed = discord.Embed(
         title=f"Edit Ratings — {member.display_name}",
         description=(
-            "Use the dropdowns below to set each role rating.\n"
-            "Each dropdown updates that role immediately."
+            "Choose a role and rating, then press Apply Rating.\n"
+            f"Rating options start at Silver II - {EDIT_RATING_MIN} and go up in {EDIT_RATING_STEP}-point steps."
         ),
         color=COLOR_PROFILE
     )
