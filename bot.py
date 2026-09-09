@@ -3122,6 +3122,95 @@ def matchmaking_score(rating_diff, lane_diff, over_cap_total, role_penalty_total
     )
 
 
+def assigned_team_score(blue_assigned, red_assigned, flexible_player_id=None):
+    blue_total = sum(role_rating(p, p["assigned_role"]) for p in blue_assigned)
+    red_total = sum(role_rating(p, p["assigned_role"]) for p in red_assigned)
+    rating_diff = abs(blue_total - red_total)
+
+    lane_diff, max_lane_diff, over_cap_total, over_cap_roles = lane_balance_stats(
+        blue_assigned,
+        red_assigned
+    )
+
+    role_penalty_total = sum(
+        role_penalty(p, p["assigned_role"], flexible_player_id=flexible_player_id)
+        for p in blue_assigned + red_assigned
+    )
+
+    score = matchmaking_score(
+        rating_diff=rating_diff,
+        lane_diff=lane_diff,
+        over_cap_total=over_cap_total,
+        role_penalty_total=role_penalty_total
+    )
+
+    return score, rating_diff, lane_diff, role_penalty_total
+
+
+def top_two_split_across_teams(blue_assigned, red_assigned, highest_id=None, second_highest_id=None):
+    if highest_id is None or second_highest_id is None:
+        return True
+
+    blue_ids = {player["discord_id"] for player in blue_assigned}
+    highest_on_blue = highest_id in blue_ids
+    second_on_blue = second_highest_id in blue_ids
+
+    return highest_on_blue != second_on_blue
+
+
+def improve_with_same_role_cross_team_swaps(blue_assigned, red_assigned, highest_id=None, second_highest_id=None):
+    """
+    Final polish pass for obvious same-role swaps across teams.
+    This catches cases where both players can stay on the same assigned role
+    but trading teams creates a much better total team rating.
+    """
+    improved = True
+    best_score, best_rating_diff, best_lane_diff, best_role_penalty = assigned_team_score(
+        blue_assigned,
+        red_assigned,
+        flexible_player_id=highest_id
+    )
+
+    while improved:
+        improved = False
+
+        for blue_index, blue_player in enumerate(blue_assigned):
+            for red_index, red_player in enumerate(red_assigned):
+                if blue_player["assigned_role"] != red_player["assigned_role"]:
+                    continue
+
+                candidate_blue = [player.copy() for player in blue_assigned]
+                candidate_red = [player.copy() for player in red_assigned]
+                candidate_blue[blue_index], candidate_red[red_index] = (
+                    candidate_red[red_index],
+                    candidate_blue[blue_index]
+                )
+
+                if not top_two_split_across_teams(candidate_blue, candidate_red, highest_id, second_highest_id):
+                    continue
+
+                score, rating_diff, lane_diff, role_penalty_total = assigned_team_score(
+                    candidate_blue,
+                    candidate_red,
+                    flexible_player_id=highest_id
+                )
+
+                if score < best_score:
+                    blue_assigned = candidate_blue
+                    red_assigned = candidate_red
+                    best_score = score
+                    best_rating_diff = rating_diff
+                    best_lane_diff = lane_diff
+                    best_role_penalty = role_penalty_total
+                    improved = True
+                    break
+
+            if improved:
+                break
+
+    return blue_assigned, red_assigned, best_rating_diff, best_lane_diff, best_role_penalty
+
+
 def find_balanced_teams(players):
     """
     Searches all 5v5 splits and keeps the lowest-scoring result.
@@ -3201,6 +3290,14 @@ def find_balanced_teams(players):
             best_rating_diff = rating_diff
             best_lane_diff = lane_diff
             best_role_penalty = total_role_penalty
+
+    if best_blue is not None and best_red is not None:
+        best_blue, best_red, best_rating_diff, best_lane_diff, best_role_penalty = improve_with_same_role_cross_team_swaps(
+            best_blue,
+            best_red,
+            highest_id=highest_id,
+            second_highest_id=second_highest_id
+        )
 
     return best_blue, best_red, best_rating_diff, best_lane_diff, best_role_penalty
 
