@@ -3969,6 +3969,8 @@ class EditRatingsView(discord.ui.View):
     def __init__(self, target_member):
         super().__init__(timeout=300)
         self.target_member = target_member
+        self.selected_role = None
+        self.selected_rating = None
 
     async def set_role_rating(self, interaction: discord.Interaction, role: str, rating: int):
         if not is_admin_member(interaction.user):
@@ -4007,25 +4009,111 @@ class EditRatingsView(discord.ui.View):
 
         await interaction.response.edit_message(embed=embed, view=self)
 
-    @discord.ui.select(placeholder="Set Top rating", options=rating_select_options())
-    async def top_rating_select(self, interaction: discord.Interaction, select: discord.ui.Select):
-        await self.set_role_rating(interaction, "Top", int(select.values[0]))
+    @discord.ui.select(
+        placeholder="Choose role to edit",
+        options=[
+            role_option("Top"),
+            role_option("Jungle"),
+            role_option("Mid"),
+            role_option("ADC"),
+            role_option("Support")
+        ],
+        row=0
+    )
+    async def role_select(self, interaction: discord.Interaction, select: discord.ui.Select):
+        if not is_admin_member(interaction.user):
+            await interaction.response.send_message(
+                "Only staff can edit player ratings.",
+                ephemeral=True
+            )
+            return
 
-    @discord.ui.select(placeholder="Set Jungle rating", options=rating_select_options())
-    async def jungle_rating_select(self, interaction: discord.Interaction, select: discord.ui.Select):
-        await self.set_role_rating(interaction, "Jungle", int(select.values[0]))
+        self.selected_role = select.values[0]
 
-    @discord.ui.select(placeholder="Set Mid rating", options=rating_select_options())
-    async def mid_rating_select(self, interaction: discord.Interaction, select: discord.ui.Select):
-        await self.set_role_rating(interaction, "Mid", int(select.values[0]))
+        await interaction.response.send_message(
+            f"Selected role: **{role_display_name(self.selected_role)}**.",
+            ephemeral=True
+        )
 
-    @discord.ui.select(placeholder="Set Bot rating", options=rating_select_options())
-    async def adc_rating_select(self, interaction: discord.Interaction, select: discord.ui.Select):
-        await self.set_role_rating(interaction, "ADC", int(select.values[0]))
+    @discord.ui.select(
+        placeholder="Choose new rating",
+        options=rating_select_options(),
+        row=1
+    )
+    async def rating_select(self, interaction: discord.Interaction, select: discord.ui.Select):
+        if not is_admin_member(interaction.user):
+            await interaction.response.send_message(
+                "Only staff can edit player ratings.",
+                ephemeral=True
+            )
+            return
 
-    @discord.ui.select(placeholder="Set Support rating", options=rating_select_options())
-    async def support_rating_select(self, interaction: discord.Interaction, select: discord.ui.Select):
-        await self.set_role_rating(interaction, "Support", int(select.values[0]))
+        self.selected_rating = int(select.values[0])
+
+        await interaction.response.send_message(
+            f"Selected rating: **{rank_for_rating(self.selected_rating)} - {self.selected_rating}**.",
+            ephemeral=True
+        )
+
+    @discord.ui.button(label="Apply Rating", style=discord.ButtonStyle.primary, row=2)
+    async def apply_rating_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.selected_role is None or self.selected_rating is None:
+            await interaction.response.send_message(
+                "Choose both a role and a rating first.",
+                ephemeral=True
+            )
+            return
+
+        await self.set_role_rating(interaction, self.selected_role, self.selected_rating)
+
+    @discord.ui.button(label="Assign Verified", style=discord.ButtonStyle.success, row=2)
+    async def assign_verified_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_admin_member(interaction.user):
+            await interaction.response.send_message(
+                "Only staff can assign the Verified role.",
+                ephemeral=True
+            )
+            return
+
+        verified_role = discord.utils.get(interaction.guild.roles, name=VERIFIED_ROLE_NAME) if interaction.guild else None
+
+        if verified_role is None:
+            await interaction.response.send_message(
+                f"I could not find a role named `{VERIFIED_ROLE_NAME}`.",
+                ephemeral=True
+            )
+            return
+
+        if verified_role in self.target_member.roles:
+            await interaction.response.send_message(
+                f"{self.target_member.display_name} already has `{VERIFIED_ROLE_NAME}`.",
+                ephemeral=True
+            )
+            return
+
+        try:
+            await self.target_member.add_roles(
+                verified_role,
+                reason=f"League bot verification assigned by {interaction.user}"
+            )
+        except discord.Forbidden:
+            await interaction.response.send_message(
+                "I could not assign that role. Check my Manage Roles permission and make sure my role is above Verified.",
+                ephemeral=True
+            )
+            return
+        except Exception as e:
+            print(f"Could not assign Verified to {self.target_member} ({self.target_member.id}): {e}")
+            await interaction.response.send_message(
+                "Something went wrong while assigning the Verified role.",
+                ephemeral=True
+            )
+            return
+
+        await interaction.response.send_message(
+            f"Assigned `{VERIFIED_ROLE_NAME}` to **{self.target_member.display_name}**.",
+            ephemeral=True
+        )
 
 
 
