@@ -3739,6 +3739,50 @@ async def syncrankroles(ctx):
     )
 
 
+@bot.command(aliases=["syncroles", "syncprimaryroles"])
+async def syncqueueroles(ctx):
+    if not await require_admin(ctx):
+        return
+
+    synced_count = 0
+    missing_member_count = 0
+    failed_players = []
+
+    for discord_id in get_all_player_ids():
+        player = get_player(discord_id)
+        member = ctx.guild.get_member(discord_id) if ctx.guild else None
+
+        if member is None:
+            missing_member_count += 1
+            continue
+
+        if not player or not player.get("primary_role"):
+            failed_players.append(str(discord_id))
+            continue
+
+        if await sync_member_primary_queue_role(member, player["primary_role"]):
+            synced_count += 1
+        else:
+            failed_players.append(player.get("name", member.display_name))
+
+    failed_text = ""
+    if failed_players:
+        preview = ", ".join(failed_players[:10])
+        extra = "" if len(failed_players) <= 10 else f" and {len(failed_players) - 10} more"
+        failed_text = f"\nCould not update: **{preview}{extra}**"
+
+    await send_embed(
+        ctx,
+        "Queue Roles Synced",
+        (
+            f"Updated primary Discord queue roles for **{synced_count}** signed-up players.\n"
+            f"Skipped **{missing_member_count}** signed-up players who are not currently in this server."
+            f"{failed_text}"
+        ),
+        COLOR_SUCCESS if not failed_players else COLOR_WARNING
+    )
+
+
 
 
 @bot.command(aliases=["cleanupverified", "removeunverified"])
