@@ -80,8 +80,8 @@ LANE_OVER_CAP_MULTIPLIER = 35
 LANE_TOTAL_DIFF_MULTIPLIER = 2
 ROLE_PENALTY_MULTIPLIER = 1
 TEAM_RATING_DIFF_MULTIPLIER = 1
-EDIT_RATING_MIN = 1000
-EDIT_RATING_MAX = 5800
+EDIT_RATING_MIN = 0
+EDIT_RATING_MAX = 4800
 EDIT_RATING_STEP = 200
 
 ROLES = ["Top", "Jungle", "Mid", "ADC", "Support"]
@@ -618,7 +618,7 @@ def build_edit_ratings_embed(member, player):
         title=f"Edit Ratings — {member.display_name}",
         description=(
             "Choose a role and rating, then press Apply Rating.\n"
-            f"Rating options start at Silver II - {EDIT_RATING_MIN} and go up in {EDIT_RATING_STEP}-point steps."
+            f"Rating options start at Iron IV - {EDIT_RATING_MIN} and go up in {EDIT_RATING_STEP}-point steps."
         ),
         color=COLOR_PROFILE
     )
