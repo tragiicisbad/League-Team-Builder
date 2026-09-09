@@ -76,13 +76,20 @@ MAX_RATING_CHANGE = 50
 MIN_LEADERBOARD_GAMES = 5
 HIGH_RATING_FORCE_FILL_THRESHOLD = 2600
 MAX_LANE_RATING_DIFF = 400
-LANE_OVER_CAP_MULTIPLIER = 35
-LANE_TOTAL_DIFF_MULTIPLIER = 2
-ROLE_PENALTY_MULTIPLIER = 1
+LANE_OVER_CAP_MULTIPLIER = 30
+LANE_TOTAL_DIFF_MULTIPLIER = 1
+ROLE_PENALTY_MULTIPLIER = 2
 TEAM_RATING_DIFF_MULTIPLIER = 1
 EDIT_RATING_MIN = 0
 EDIT_RATING_MAX = 4800
 EDIT_RATING_STEP = 200
+AVOIDED_ROLE_PENALTY = 8000
+SECONDARY_ROLE_PENALTY = 50
+FILL_PREFERENCE_ROLE_PENALTY = 125
+OFF_ROLE_PENALTY = 900
+FLEX_SECONDARY_ROLE_PENALTY = 25
+FLEX_FILL_PREFERENCE_ROLE_PENALTY = 75
+FLEX_OFF_ROLE_PENALTY = 450
 
 ROLES = ["Top", "Jungle", "Mid", "ADC", "Support"]
 QUEUE_ROLE_NAMES = ["Top", "Jungle", "Mid", "Bot", "Support", "Fill"]
@@ -2996,7 +3003,9 @@ def clear_completed_game_players():
 def role_penalty(player, assigned_role, flexible_player_id=None):
     """
     Scores how painful it is to put one player on one role.
-    Lower is better. Avoided roles are treated as almost impossible.
+    Lower is better. Secondary and Fill are playable compromises, while
+    true off-role assignments are expensive enough that lane balance has
+    to meaningfully improve before the bot fills someone.
     """
     primary = player["primary_role"]
     secondary = player["secondary_role"]
@@ -3004,7 +3013,7 @@ def role_penalty(player, assigned_role, flexible_player_id=None):
 
     # Avoided roles are still strongly discouraged.
     if avoided_role == assigned_role:
-        return 6000
+        return AVOIDED_ROLE_PENALTY
 
     # The highest-rated player in the lobby is treated as more flexible.
     # They are still best on preferred roles, but the bot can move them more easily
@@ -3014,24 +3023,23 @@ def role_penalty(player, assigned_role, flexible_player_id=None):
             return 0
 
         if secondary == assigned_role:
-            return 25
+            return FLEX_SECONDARY_ROLE_PENALTY
 
         if primary == "Fill" or secondary == "Fill":
-            return 0
+            return FLEX_FILL_PREFERENCE_ROLE_PENALTY
 
-        return 175
+        return FLEX_OFF_ROLE_PENALTY
 
     if primary == assigned_role:
         return 0
 
     if secondary == assigned_role:
-        return 75
+        return SECONDARY_ROLE_PENALTY
 
     if primary == "Fill" or secondary == "Fill":
-        return 100
+        return FILL_PREFERENCE_ROLE_PENALTY
 
-    # Off-role is now allowed when it helps keep lanes under the rating cap.
-    return 450
+    return OFF_ROLE_PENALTY
 
 
 def best_role_assignment(team, flexible_player_id=None, forced_roles=None):
