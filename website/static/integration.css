@@ -35,3 +35,35 @@ button:disabled,input:disabled,select:disabled{opacity:.55;cursor:not-allowed}
  .queue-ready-dialog h2 { font-size: 28px; margin: 0 0 16px; }
  .queue-ready-dialog p { margin: 0 0 20px; line-height: 1.6; }
  .queue-ready-dialog button { margin-right: 8px; }
+@media(max-width:700px){
+  .nav{height:72px;gap:12px}
+  .brand{min-width:0;gap:10px}.brand strong{font-size:14px;line-height:1.3}
+  .brand img{flex-shrink:0}.menu-button{flex-shrink:0;min-width:44px;min-height:44px}
+  .nav-links{top:72px;left:0;right:0;border-radius:8px;padding:12px}
+  .nav-links>a,.nav-links>button{min-height:44px;text-align:left}
+  .hero{padding-top:100px;padding-bottom:40px;min-height:0}
+  .hero-copy{margin-top:120px;margin-bottom:28px}
+  .hero-copy h1{font-size:40px;line-height:1.08}
+  .hero-copy p{font-size:16px;line-height:1.65}
+  .hero-actions .button{min-height:48px}
+  .panel-grid{gap:20px;grid-template-columns:minmax(0,1fr)}
+  .panel-grid .discord-panel,.panel-grid .discord-panel:hover{transform:none}
+  .discord-panel{height:410px;min-height:410px;min-width:0}
+  .queue-panel{height:460px;min-height:460px}
+  .panel-top{padding:16px;gap:10px}.panel-top h3{font-size:18px}
+  .live-pill{font-size:10px;flex-shrink:0}
+  .panel-foot{padding:12px 16px;gap:10px}
+  .queue-panel .panel-foot>span{flex-basis:100%;overflow-wrap:anywhere}
+  .queue-panel .panel-foot>.button{flex:1;min-height:44px;padding:10px 14px}
+  .queue-personal-status{padding:10px 16px;font-size:13px;overflow-wrap:anywhere}
+  .voice-user,.queue-user{min-height:48px}.queue-user .rank{font-size:11px;max-width:100px}
+  .discord-explainer,.role-section,.faq-section{padding:48px 0}
+  .roles-row{gap:12px}.role-card,.role-card:last-child{min-height:110px;grid-column:auto}
+  .profile-connections>div{flex-wrap:wrap;gap:8px}.profile-connections span{overflow-wrap:anywhere}
+  #profile-dialog,.queue-ready-dialog{box-sizing:border-box;max-height:calc(100dvh - 32px);overflow:auto;padding:20px}
+  .profile-field input,.profile-field select{font-size:16px;min-height:44px;box-sizing:border-box}
+  .profile-actions .button,.queue-ready-dialog .button{min-height:44px}
+  .queue-ready-dialog .button{margin-bottom:8px}
+  .footer-links{gap:20px;flex-wrap:wrap}.legal{overflow-wrap:anywhere}
+}
+@media(max-width:360px){.hero-copy h1{font-size:36px}.brand strong{font-size:12px}.panel-top h3{font-size:16px}}
