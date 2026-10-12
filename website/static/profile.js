@@ -26,9 +26,6 @@
   const readyButton = document.createElement('button');
   readyButton.type = 'button'; readyButton.className = 'button button--primary';
   readyButton.textContent = "I'm ready"; readyButton.hidden = true;
-  const notifyButton = document.createElement('button');
-  notifyButton.type = 'button'; notifyButton.className = 'button';
-  notifyButton.textContent = 'Enable notifications';
   const queueButton = document.createElement('button');
   queueButton.type = 'button';
   queueButton.className = 'button button--primary';
@@ -40,13 +37,7 @@
   leaveButton.className = 'button';
   leaveButton.textContent = 'Leave queue';
   queueFooter.append(leaveButton);
-  queueFooter.append(readyButton, notifyButton);
-  notifyButton.hidden = !('Notification' in window);
-  notifyButton.addEventListener('click', async () => {
-    const permission = await Notification.requestPermission();
-    notifyButton.textContent = permission === 'granted' ? 'Notifications enabled' : 'Notifications blocked';
-    notifyButton.disabled = permission === 'granted';
-  });
+  queueFooter.append(readyButton);
   function notify(message) {
     if ('Notification' in window && Notification.permission === 'granted') {
       try {new Notification('PCL queue', {body:message, icon:'/pcl-logo.png'});} catch {}
