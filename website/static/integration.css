@@ -1,0 +1,25 @@
+[hidden]{display:none!important}
+*{letter-spacing:0!important}
+.nav-links>a:not(.button){padding:.85rem 1.1rem;font-weight:600;font-size:.9rem;color:var(--muted);border-bottom:2px solid transparent}
+.nav-links>a.is-active{color:var(--silver);border-bottom-color:var(--cyan)}
+.button,.discord-panel,.role-card,.server-cards article,.coming-card,.table-wrap{border-radius:8px}
+.hero-copy h1{font-size:80px}.section-heading h2{font-size:48px}.standings-title h1{font-size:72px}
+.hero{min-height:850px;padding-top:8rem}.hero-copy{margin-bottom:2rem}
+.discord-panel{height:400px;min-height:400px;display:flex;flex-direction:column}
+.panel-top,.panel-foot{flex-shrink:0}.panel-body{flex:1;min-height:0;overflow:auto}
+.panel-foot{margin-top:0}.panel-foot a{color:var(--cyan)}
+.channel-title>strong{font-size:13px;overflow-wrap:anywhere}.channel-title>.channel-symbol{margin:0;padding:0;background:none;color:var(--muted)}
+.voice-user,.queue-user{height:auto;min-height:44px}.voice-user strong,.queue-user strong{min-width:0;overflow-wrap:anywhere}
+.queue-user{flex-wrap:wrap}.rank{white-space:normal;text-align:right}
+.avatar-initials{display:grid;place-items:center;font-size:11px;color:var(--cyan);font-weight:700}
+.channel-empty{font-size:13px;padding:10px 8px}
+.waitlist-heading{display:flex;justify-content:space-between;padding:12px 20px;border-top:1px solid var(--line);font-size:12px;color:var(--muted)}
+.queue-message{height:100%;min-height:180px}.update-note{font-size:12px;margin:18px 0}
+.coming-card{grid-template-columns:1fr auto}.coming-card p{font-size:15px}
+.roles-row{grid-template-columns:repeat(6,minmax(0,1fr))}.role-card{min-height:140px}
+.ready-demo{flex-wrap:wrap}.ready-demo>div{flex:1;min-width:180px}
+.footer-links a{display:block}.live-match{display:block}.live-match time{display:block;color:var(--muted);font-size:13px;margin:10px 0}.live-teams{display:grid;grid-template-columns:1fr 1fr;gap:24px}
+.hero-actions,.panel-foot{flex-wrap:wrap}.hero-art,.hero-video{animation:none;transform:none}
+@media(max-width:1100px){.hero-copy h1{font-size:64px}.section-heading h2{font-size:40px}.standings-title h1{font-size:60px}}
+@media(max-width:700px){.hero-copy h1{font-size:44px}.section-heading h2{font-size:32px}.standings-title h1{font-size:44px}.hero{padding-top:8rem}.discord-panel{height:380px;min-height:380px}.roles-row{grid-template-columns:repeat(2,minmax(0,1fr))}.coming-card{grid-template-columns:1fr}.coming-card .button{justify-self:start}.live-teams{grid-template-columns:1fr}.panel-grid{max-width:none}.hero-copy{width:100%}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
