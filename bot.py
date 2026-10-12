@@ -2853,7 +2853,18 @@ def website_voice_channels():
                 for member in channel.members if not member.bot
             ]
         })
-    return {"channels": channels}
+    def queue_members(players):
+        result = []
+        for uid, player in players.items():
+            member = guild.get_member(int(uid))
+            result.append({"name": member.display_name if member else player.get("name", "Player"),
+                           "avatar_url": str(member.display_avatar.with_size(64)) if member else None})
+        return result
+    return {"channels": channels, "queue": {
+        "capacity": MAX_QUEUE_SIZE,
+        "state": "In game" if queue_locked else "Ready check" if ready_check else "Queue open" if queue_message_id else "No active queue",
+        "players": queue_members(player_queue), "waitlist": queue_members(waitlist_queue)
+    }}
 
 
 async def resolve_tournament_result(game, winner, match_id):
