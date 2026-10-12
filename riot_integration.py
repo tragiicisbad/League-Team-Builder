@@ -259,6 +259,7 @@ class TournamentService:
         app.router.add_post("/riot/callback", self.callback)
         app.router.add_get("/health", self.health)
         app.router.add_get("/", self.home)
+        app.router.add_get("/riot.txt", self.verification)
         app.router.add_get("/api/standings", self.standings)
         self.runner = web.AppRunner(app)
         await self.runner.setup()
@@ -271,6 +272,10 @@ class TournamentService:
 
     async def health(self, req):
         return web.json_response({"status": "ok"})
+
+    async def verification(self, req):
+        path = Path(__file__).with_name("website") / "riot.txt"
+        return web.Response(text=path.read_text(encoding="utf-8").strip(), content_type="text/plain")
 
     async def standings(self, req):
         try:
