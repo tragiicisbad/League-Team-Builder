@@ -161,6 +161,30 @@
   let statusBusy = false;
   let actionBusy = false;
   let shownReadyDeadline = null;
+  const readySound = new Audio('/static/ready-check.mp3');
+  readySound.preload = 'auto';
+  let pendingReadySound = false;
+  async function playReadySound() {
+    try {
+      readySound.currentTime = 0;
+      await readySound.play();
+      pendingReadySound = false;
+    } catch {pendingReadySound = true;}
+  }
+  function unlockReadySound() {
+    if (pendingReadySound && queueState?.ready_check && !queueState.confirmed) {
+      playReadySound();
+    } else {
+      pendingReadySound = false;
+      readySound.muted = true;
+      const playback = readySound.play();
+      if (playback) playback.then(()=>{
+        readySound.pause(); readySound.currentTime = 0; readySound.muted = false;
+      }).catch(()=>{readySound.muted = false;});
+    }
+  }
+  document.addEventListener('pointerdown', unlockReadySound, {once:true});
+  document.addEventListener('keydown', unlockReadySound, {once:true});
   const readyDialog = document.createElement('dialog');
   readyDialog.className = 'queue-ready-dialog';
   const readyTitle = document.createElement('h2');
@@ -214,10 +238,12 @@
     popupReady.disabled = actionBusy;
     readyTimer.textContent = s?.ready_check ? timer.replace(' / ', '') : '';
     if (!s?.ready_check || s.confirmed) {
+      pendingReadySound = false;
       if (readyDialog.open) readyDialog.close();
     } else if (shownReadyDeadline !== s.deadline) {
       shownReadyDeadline = s.deadline;
       readyDialog.showModal();
+      playReadySound();
     }
     statusLine.textContent = !account?.authenticated ? 'Sign in to join the queue.' : !s ? 'Queue connection unavailable. Retrying...' : !s.signed_up ? 'Complete /signup in Discord to join.' : s.ready_check ? (s.confirmed ? 'You are ready.' : 'Your lobby is ready. Confirm below.') + timer : s.queued ? (s.locked ? 'You are in the game.' : "You're queued.") + timer : s.waitlist_position ? 'Waitlist position: ' + s.waitlist_position + timer : !s.active ? 'No active queue. Start one in Discord.' : 'You can join the queue.' + timer;
     document.querySelectorAll('.queue-user').forEach(row => row.classList.remove('is-current-player'));
