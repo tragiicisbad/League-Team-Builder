@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Community Customs</title>
+  <style>
+    *{box-sizing:border-box}body{margin:0;background:#111416;color:#edf0f0;font:15px system-ui,sans-serif;letter-spacing:0}
+    header{border-bottom:1px solid #343a3c;padding:25px max(20px,calc((100% - 1100px)/2));display:flex;align-items:center;gap:15px}
+    header img{width:42px;height:42px}h1{margin:0;font-size:25px}main{max-width:1140px;margin:auto;padding:28px 20px}
+    nav{display:flex;gap:25px;border-bottom:1px solid #343a3c;margin-bottom:25px}button{font:inherit;cursor:pointer;color:#b6bfc1;background:none;border:0;padding:12px 0}
+    button[aria-selected=true]{color:#60dfb1;border-bottom:2px solid #60dfb1}button:focus-visible,input:focus-visible{outline:2px solid #60dfb1;outline-offset:4px}
+    .tools{display:flex;align-items:center;justify-content:space-between;gap:15px;margin-bottom:18px}input{font:inherit;background:#202628;color:#fff;border:1px solid #495254;padding:10px 12px;border-radius:4px;width:min(260px,60%)}
+    #status{font-size:13px;color:#aebabc}.scroll{overflow:auto}table{width:100%;border-collapse:collapse;white-space:nowrap}th{text-align:left;color:#9dabad;font-size:12px;text-transform:uppercase;font-weight:600;padding:12px 14px;border-bottom:1px solid #465153}td{padding:15px 14px;border-bottom:1px solid #2d3436}td:first-child{color:#91a1a4;width:55px}td:nth-child(2){font-weight:600}td:nth-child(4){color:#60dfb1;font-variant-numeric:tabular-nums}
+    .empty{padding:50px 20px;text-align:center;color:#aebabc}.match{border-bottom:1px solid #343a3c;padding:20px 0}.match h2{font-size:17px;margin:0 0 15px}.teams{display:grid;grid-template-columns:1fr 1fr;gap:30px}.team h3{font-size:14px;color:#74bbff}.team.red h3{color:#ff8f9b}.player{display:flex;gap:12px;margin:9px 0}.role{color:#9dabad;min-width:70px}time{float:right;font-size:13px;color:#aebabc;font-weight:400}footer{max-width:1140px;margin:25px auto;padding:20px;color:#8f9d9f;font-size:12px;border-top:1px solid #343a3c}footer a{color:#b5c8cb}[hidden]{display:none!important}
+    @media(max-width:580px){h1{font-size:21px}.teams{gap:15px}.player{display:block}.role{display:block;font-size:12px}.match time{float:none;display:block;margin-top:8px}th,td{padding:12px 10px}}
+  </style>
+</head>
+<body>
+  <header><img src="https://ddragon.leagueoflegends.com/cdn/5.5.1/img/ui/champion.png" alt=""><h1>Community Customs</h1></header>
+  <main>
+    <nav aria-label="Standings views"><button id="leader-tab" role="tab" aria-selected="true">Leaderboard</button><button id="matches-tab" role="tab" aria-selected="false">Match History</button></nav>
+    <div class="tools"><input id="search" aria-label="Search players" placeholder="Search players"><span id="status" role="status">Loading...</span></div>
+    <section id="leaders"><div class="scroll"><table><thead><tr><th>#</th><th>Player</th><th>Rank</th><th>MMR</th><th>Role</th><th>W / L</th><th>Win Rate</th></tr></thead><tbody id="rows"></tbody></table></div><p id="no-players" class="empty" hidden>No public standings yet.</p></section>
+    <section id="matches" hidden></section>
+  </main>
+  <footer>Community Customs is not endorsed by Riot Games and does not reflect the views or opinions of Riot Games or anyone officially involved in producing or managing Riot Games properties. Riot Games and all associated properties are trademarks or registered trademarks of Riot Games, Inc.</footer>
+  <script>
+    const $ = id => document.getElementById(id);
+    let data = {leaderboard:[],matches:[]};
+    const role = value => value === 'ADC' ? 'Bot' : value;
+    function element(tag,text,className){const node=document.createElement(tag);node.textContent=text;if(className)node.className=className;return node}
+    function render(){
+      $('rows').replaceChildren();
+      data.leaderboard.forEach((p,index)=>{
+        if(!p.name.toLowerCase().includes($('search').value.toLowerCase()))return;
+        const row=document.createElement('tr'),games=p.wins+p.losses;
+        [index+1,p.name,p.rank,p.rating,role(p.role),`${p.wins} / ${p.losses}`,games?`${Math.round(p.wins/games*100)}%`:'--'].forEach(value=>row.append(element('td',value)));
+        $('rows').append(row);
+      });
+      $('no-players').hidden=$('rows').children.length>0;
+      $('matches').replaceChildren();
+      data.matches.forEach(match=>{
+        const article=element('article','','match'),heading=element('h2',`${match.winner==='blue'?'Blue':'Red'} Team Wins`),date=element('time',new Date(match.date).toLocaleString());
+        date.dateTime=match.date;heading.append(date);article.append(heading);
+        const teams=element('div','','teams');
+        ['blue','red'].forEach(side=>{const team=element('div','',`team ${side}`);team.append(element('h3',`${side==='blue'?'Blue':'Red'} Team`));match[side].forEach(p=>{const line=element('div','','player');line.append(element('span',role(p.role),'role'),element('span',p.name));team.append(line)});teams.append(team)});
+        article.append(teams);$('matches').append(article);
+      });
+      if(!data.matches.length)$('matches').append(element('p','No public matches yet.','empty'));
+    }
+    async function refresh(){try{const response=await fetch('/api/standings');if(!response.ok)throw Error();data=await response.json();render();$('status').textContent=`Updated ${new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}`}catch{$('status').textContent='Standings unavailable. Retrying...'}}
+    function show(matches){$('leaders').hidden=matches;$('matches').hidden=!matches;$('search').hidden=matches;$('leader-tab').setAttribute('aria-selected',String(!matches));$('matches-tab').setAttribute('aria-selected',String(matches))}
+    $('leader-tab').onclick=()=>show(false);$('matches-tab').onclick=()=>show(true);$('search').oninput=render;
+    refresh();setInterval(refresh,30000);
+  </script>
+</body>
+</html>

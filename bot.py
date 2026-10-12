@@ -3,9 +3,11 @@ import itertools
 import json
 import copy
 import asyncio
+from types import SimpleNamespace
 from datetime import datetime, timedelta
 
 import discord
+import riot_integration as riot
 from discord.ext import commands
 from dotenv import load_dotenv
 
@@ -50,6 +52,9 @@ intents.reactions = True
 intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
+result_lock = asyncio.Lock()
+team_generation_lock = asyncio.Lock()
+tournament_service = None
 
 JOIN_EMOJI = "✅"
 STAFF_ROLE_NAMES = ["Customs Admin", "Moderator"]
@@ -1069,6 +1074,8 @@ queue_expire_task = None
 player_queue = {}
 waitlist_queue = {}
 queue_locked = False
+ready_check = None
+READY_CHECK_SECONDS = 300
 last_blue_team = []
 last_red_team = []
 last_teams_message_id = None
@@ -1646,7 +1653,7 @@ def build_queue_embed():
             inline=False
         )
 
-    embed.set_footer(text="Click Generate Teams when 10 players are active. After !result, a fresh queue post is created.")
+    embed.set_footer(text="At 10 players, a 5-minute ready check starts. Teams are generated after everyone confirms.")
     return embed
 
 
@@ -1698,10 +1705,20 @@ async def run_test_fill_from_button(interaction, queue_name):
 
 
 async def clear_5v5_queue_state(refund_reason="Queue was cleared."):
+    async with result_lock:
+        return await clear_5v5_queue_state_unlocked(refund_reason)
+
+
+async def clear_5v5_queue_state_unlocked(refund_reason="Queue was cleared."):
     global queue_locked, last_blue_team, last_red_team, last_teams_message_id, last_teams_channel_id
     global last_match_history_message_id, last_match_history_channel_id, queue_test_mode
     global queue_started_at, queue_last_activity_at, queue_expire_at
 
+    cancel_ready_check()
+    if riot.enabled():
+        game = riot.pending_game()
+        if game:
+            riot.set_status(game["code"], "cancelled")
     refunded_bets = await refund_active_betting(refund_reason)
 
     player_queue.clear()
@@ -1921,6 +1938,20 @@ def stop_queue_expire_task():
 
 
 async def update_queue_message():
+    if ready_check is not None and set(player_queue) != ready_check["players"]:
+        old_check = ready_check
+        cancel_ready_check()
+        if old_check["message"]:
+            try:
+                await old_check["message"].edit(
+                    embed=discord.Embed(
+                        title="Ready Check Cancelled",
+                        description="The active queue changed. A new check will start when 10 players are queued.",
+                        color=COLOR_WARNING
+                    )
+                )
+            except discord.HTTPException:
+                pass
     if queue_message_id is None or queue_channel_id is None:
         return
 
@@ -1933,6 +1964,100 @@ async def update_queue_message():
         await msg.edit(embed=build_queue_embed(), view=QueueTeamsView())
     except Exception as e:
         print(f"Could not update queue message: {e}")
+
+    if len(player_queue) == MAX_QUEUE_SIZE and not queue_locked and not queue_test_mode:
+        await start_ready_check(channel)
+
+
+def cancel_ready_check():
+    global ready_check
+    if ready_check is not None:
+        check = ready_check
+        ready_check = None
+        if check.get("task") and check["task"] is not asyncio.current_task():
+            check["task"].cancel()
+
+
+def ready_check_embed(check, title="Ready Check"):
+    return discord.Embed(
+        title=title,
+        description=(
+            "React with " + JOIN_EMOJI + " when you are ready to play.\n"
+            f"Deadline: <t:{check['deadline']}:R>\n\n" +
+            "\n".join(
+                f"{'Ready' if uid in check['confirmed'] else 'Waiting'}: <@{uid}>"
+                for uid in check["players"]
+            )
+        ),
+        color=COLOR_QUEUE
+    )
+
+
+async def start_ready_check(channel):
+    global ready_check
+    if ready_check is not None or queue_locked or len(player_queue) != MAX_QUEUE_SIZE:
+        return
+    check = {
+        "players": set(player_queue), "confirmed": set(),
+        "deadline": int(datetime.now().timestamp()) + READY_CHECK_SECONDS,
+        "event": asyncio.Event(), "message": None
+    }
+    ready_check = check
+    try:
+        check["message"] = await channel.send(
+            content=" ".join(f"<@{uid}>" for uid in check["players"]),
+            embed=ready_check_embed(check),
+            allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False)
+        )
+        await check["message"].add_reaction(JOIN_EMOJI)
+    except Exception:
+        ready_check = None
+        raise
+    check["task"] = asyncio.create_task(finish_ready_check(check, channel))
+
+
+async def finish_ready_check(check, channel):
+    global ready_check
+    try:
+        try:
+            await asyncio.wait_for(check["event"].wait(), READY_CHECK_SECONDS)
+        except asyncio.TimeoutError:
+            pass
+        if ready_check is not check:
+            return
+        missing = check["players"] - check["confirmed"]
+        if not missing and set(player_queue) == check["players"]:
+            check["passed"] = True
+            await check["message"].edit(embed=ready_check_embed(check, "Everyone Is Ready"))
+            ctx = SimpleNamespace(send=channel.send, channel=channel, guild=channel.guild)
+            await teams.callback(ctx)
+            ready_check = None
+            return
+        ready_check = None
+        for uid in missing:
+            player_queue.pop(uid, None)
+        refill_active_queue_from_waitlist()
+        touch_queue_activity()
+        await check["message"].edit(embed=ready_check_embed(check, "Ready Check Expired"))
+        await channel.send(
+            "Ready check expired. Players who did not confirm were removed. "
+            "Waitlisted players have been promoted where possible."
+        )
+        # Remove stale queue reactions so removed players can join again.
+        if queue_message_id:
+            try:
+                queue_msg = await channel.fetch_message(queue_message_id)
+                for uid in missing:
+                    await queue_msg.remove_reaction(JOIN_EMOJI, discord.Object(id=uid))
+            except discord.HTTPException:
+                pass
+        await update_queue_message()
+    except asyncio.CancelledError:
+        return
+    except Exception as exc:
+        if ready_check is check:
+            ready_check = None
+        print(f"Ready check failed: {exc}")
 
 
 async def delete_queue_message():
@@ -1999,6 +2124,7 @@ async def create_queue_message(channel, replace_existing=True, duration_seconds=
         print(f"Could not add join reaction to queue message: {e}")
 
     restart_queue_expire_task()
+    await update_queue_message()
 
     return msg
 
@@ -2576,6 +2702,9 @@ async def on_ready():
     global persistent_views_registered
 
     setup_database()
+    riot.setup()
+    if riot.enabled() or os.getenv("WEBSITE_ENABLED", "false").lower() == "true":
+        await start_tournament_service()
 
     if not persistent_views_registered:
         bot.add_view(QueueTeamsView())
@@ -2595,6 +2724,124 @@ async def on_ready():
         print("Slash command sync skipped. Set SYNC_SLASH_COMMANDS=true to sync intentionally.")
 
     print(f"Logged in as {bot.user}")
+
+
+@bot.tree.command(name="linkriot", description="Link your NA Riot ID to your customs profile")
+async def linkriot(interaction: discord.Interaction, riot_id: str, share_match_history: bool = False):
+    await interaction.response.defer(ephemeral=True)
+    if not get_player(interaction.user.id):
+        await interaction.followup.send("Complete /signup first.", ephemeral=True)
+        return
+    if riot.pending_game():
+        await interaction.followup.send("Account links cannot change during an active tournament game.", ephemeral=True)
+        return
+    try:
+        data = await riot.lookup(riot_id)
+        riot.save_account(interaction.user.id, data, share_match_history)
+    except riot.RiotError as exc:
+        await interaction.followup.send(str(exc), ephemeral=True)
+        return
+    except Exception:
+        await interaction.followup.send("Could not save this account. It may already be linked, or Riot may be unavailable.", ephemeral=True)
+        return
+    await interaction.followup.send(
+        f"Linked {data['gameName']}#{data['tagLine']}. "
+        f"Public match history sharing: {'enabled' if share_match_history else 'disabled'}.", ephemeral=True
+    )
+
+
+@bot.command()
+async def riotsetup(ctx):
+    if not await require_admin(ctx):
+        return
+    callback = os.getenv("RIOT_CALLBACK_URL", "")
+    if not callback.startswith(("https://", "http://")) or not callback.endswith("/riot/callback"):
+        await ctx.send("Set RIOT_CALLBACK_URL to your public server URL ending in /riot/callback first.")
+        return
+    try:
+        provider = await riot.request("POST", "/lol/tournament/v5/providers", body={"region": "NA", "url": callback})
+    except riot.RiotError as exc:
+        await ctx.send(str(exc))
+        return
+    await ctx.send(f"Provider registered. Set RIOT_PROVIDER_ID to `{provider}` in your hosting settings, then restart the bot.")
+
+
+@bot.command()
+async def riotstatus(ctx):
+    if not await require_admin(ctx):
+        return
+    game = riot.pending_game()
+    await ctx.send(
+        f"Automatic results: {'enabled' if riot.enabled() else 'disabled'}. "
+        f"API key: {'configured' if os.getenv('RIOT_API_KEY') else 'missing'}. "
+        f"Provider: {'configured' if os.getenv('RIOT_PROVIDER_ID') else 'missing'}. "
+        f"Active tournament: {game['status'] if game else 'none'}."
+    )
+
+
+@bot.tree.command(name="sharehistory", description="Choose whether to appear on the public customs website")
+async def sharehistory(interaction: discord.Interaction, share: bool):
+    if not riot.account(interaction.user.id):
+        await interaction.response.send_message("Link your account with /linkriot first.", ephemeral=True)
+        return
+    with connect() as conn:
+        conn.execute("UPDATE riot_accounts SET public_history=%s WHERE discord_id=%s", (share, interaction.user.id))
+    await interaction.response.send_message(
+        f"Public leaderboard and match history sharing {'enabled' if share else 'disabled'}.", ephemeral=True
+    )
+
+
+async def start_tournament_service():
+    global tournament_service, last_blue_team, last_red_team, queue_locked
+    global queue_channel_id, last_teams_channel_id, last_teams_message_id, active_betting_id
+    global queue_message_id, last_match_history_message_id, last_match_history_channel_id
+    global last_teams_embed_description
+    if tournament_service is not None:
+        return
+    game = riot.pending_game()
+    if game:
+        state = game["snapshot"]
+        last_blue_team, last_red_team = state["blue"], state["red"]
+        player_queue.update({p["discord_id"]: p for p in last_blue_team + last_red_team})
+        queue_locked = True
+        queue_channel_id = state.get("queue_channel_id") or state["channel_id"]
+        queue_message_id = state.get("queue_message_id")
+        last_teams_channel_id = state["channel_id"]
+        last_teams_message_id = state.get("teams_message_id")
+        last_match_history_message_id = state.get("history_message_id")
+        last_match_history_channel_id = state.get("history_channel_id")
+        last_teams_embed_description = f"Tournament lobby code: `{game['code']}`"
+        active_betting_id = state.get("betting_id")
+    tournament_service = riot.TournamentService(resolve_tournament_result)
+    await tournament_service.start()
+
+
+async def resolve_tournament_result(game, winner, match_id):
+    channel = bot.get_channel(game["snapshot"]["channel_id"])
+    if channel is None:
+        raise riot.RiotError("The result channel is unavailable.")
+    ctx = SimpleNamespace(send=channel.send, channel=channel, guild=channel.guild)
+    async with result_lock:
+        current = riot.pending_game()
+        if not current or current["code"] != game["code"] or current["status"] != "pending":
+            return
+        await record_tournament_result(ctx, winner, current, match_id)
+
+
+async def record_tournament_result(ctx, winner, game, match_id=None):
+    with connect() as conn:
+        conn.execute("UPDATE riot_games SET status='processing', riot_match_id=%s WHERE code=%s",
+                     (match_id, game["code"]))
+    try:
+        await record_result(ctx, winner)
+    except Exception:
+        # Existing rating updates span multiple transactions. Never blindly retry a partial result.
+        riot.set_status(game["code"], "needs_review")
+        await ctx.send("Tournament result could not finish. Staff must review ratings before recording another result.")
+        raise
+    with connect() as conn:
+        conn.execute("UPDATE riot_games SET status='completed', winner=%s, local_match_id=%s WHERE code=%s",
+                     (winner, last_result_rollback.get("match_id") if last_result_rollback else None, game["code"]))
 
 
 @bot.event
@@ -2820,6 +3067,14 @@ async def setqueuetime(ctx, duration: str):
 
 @bot.event
 async def on_raw_reaction_add(payload):
+    check = ready_check
+    if check and check["message"] and payload.message_id == check["message"].id:
+        if str(payload.emoji) == JOIN_EMOJI and payload.user_id in check["players"]:
+            check["confirmed"].add(payload.user_id)
+            await check["message"].edit(embed=ready_check_embed(check))
+            if check["confirmed"] == check["players"]:
+                check["event"].set()
+        return
     if payload.user_id == bot.user.id:
         return
 
@@ -2872,6 +3127,13 @@ async def on_raw_reaction_add(payload):
 
 @bot.event
 async def on_raw_reaction_remove(payload):
+    check = ready_check
+    if check and check["message"] and payload.message_id == check["message"].id:
+        if str(payload.emoji) == JOIN_EMOJI:
+            check["confirmed"].discard(payload.user_id)
+            check["event"].clear()
+            await check["message"].edit(embed=ready_check_embed(check))
+        return
     if payload.user_id == bot.user.id:
         return
 
@@ -2890,6 +3152,7 @@ async def on_raw_reaction_remove(payload):
             return
 
         del player_queue[payload.user_id]
+        cancel_ready_check()
         removed_from_active = True
 
     if payload.user_id in waitlist_queue:
@@ -4326,12 +4589,26 @@ class ResultView(discord.ui.View):
 
 @bot.command()
 async def teams(ctx):
+    async with team_generation_lock:
+        await generate_teams(ctx)
+
+
+async def generate_teams(ctx):
     """
     Builds teams from the active queue, locks the queue, posts result buttons,
     and opens betting on the same teams embed.
     """
     global last_blue_team, last_red_team, queue_locked, last_teams_message_id, last_teams_channel_id
     global last_teams_embed_title, last_teams_embed_description
+
+    if queue_locked:
+        await send_embed(ctx, "Game Already Started", "Teams have already been generated.", COLOR_WARNING)
+        return
+
+    if not queue_test_mode and len(player_queue) == MAX_QUEUE_SIZE:
+        if ready_check is None or not ready_check.get("passed"):
+            await start_ready_check(ctx.channel)
+            return
 
     if len(player_queue) < MAX_QUEUE_SIZE:
         await send_embed(
@@ -4345,6 +4622,17 @@ async def teams(ctx):
     players = list(player_queue.values())[:MAX_QUEUE_SIZE]
     best_blue, best_red, rating_diff, lane_diff, role_penalty_total = find_balanced_teams(players)
 
+    tournament_code = None
+    if riot.enabled() and not queue_test_mode:
+        try:
+            tournament_code = await riot.create_game({
+                "blue": best_blue, "red": best_red, "channel_id": ctx.channel.id,
+                "guild_id": ctx.guild.id
+            })
+        except riot.RiotError as exc:
+            await send_embed(ctx, "Tournament Setup Needed", str(exc), COLOR_WARNING)
+            return
+
     last_blue_team = best_blue
     last_red_team = best_red
     queue_locked = True
@@ -4352,7 +4640,10 @@ async def teams(ctx):
     await update_queue_message()
 
     last_teams_embed_title = "Balanced Teams Generated"
-    last_teams_embed_description = None
+    last_teams_embed_description = (
+        f"Tournament lobby code: `{tournament_code}`\nJoin using this code and keep the displayed Blue/Red teams."
+        if tournament_code else None
+    )
     embed = build_teams_embed(
         title=last_teams_embed_title,
         description=last_teams_embed_description
@@ -4367,6 +4658,15 @@ async def teams(ctx):
     if not queue_test_mode:
         await open_betting_for_current_match(ctx.guild)
 
+    if tournament_code:
+        with connect() as conn:
+            conn.execute("UPDATE riot_games SET snapshot=snapshot || %s::jsonb WHERE code=%s", (
+                json.dumps({"betting_id": active_betting_id, "teams_message_id": msg.id,
+                            "queue_message_id": queue_message_id, "queue_channel_id": queue_channel_id,
+                            "history_message_id": last_match_history_message_id,
+                            "history_channel_id": last_match_history_channel_id}), tournament_code
+            ))
+
 
 @bot.command()
 async def swap(ctx, player_one_arg: str, player_two_arg: str):
@@ -4378,6 +4678,10 @@ async def swap(ctx, player_one_arg: str, player_two_arg: str):
     global last_teams_embed_title, last_teams_embed_description
 
     if not await require_admin(ctx):
+        return
+
+    if riot.pending_game():
+        await ctx.send("A tournament lobby code is active. Clear the queue before changing its teams.")
         return
 
     if not last_blue_team or not last_red_team:
@@ -4484,15 +4788,29 @@ def build_short_rating_formula(lobby_average, base_rating_change):
 
 @bot.command()
 async def result(ctx, winner: str):
+    if not await require_admin(ctx):
+        return
+    async with result_lock:
+        if winner.lower() not in ("blue", "red") or not last_blue_team or not last_red_team:
+            await record_result(ctx, winner)
+            return
+        game = riot.pending_game()
+        if game and game["status"] in ("processing", "needs_review"):
+            await ctx.send("A previous result was interrupted. Review ratings before clearing this game.")
+            return
+        if game:
+            await record_tournament_result(ctx, winner, game)
+        else:
+            await record_result(ctx, winner)
+
+
+async def record_result(ctx, winner: str):
     """
     Records the winner, updates ratings and streaks, settles betting,
     awards coins, clears played users from queue, and prepares rollback data.
     """
     global queue_locked, last_blue_team, last_red_team, last_teams_message_id, last_teams_channel_id, last_match_history_message_id, last_match_history_channel_id, last_result_rollback, active_betting_id
     global queue_test_mode
-
-    if not await require_admin(ctx):
-        return
 
     winner = winner.lower()
 
@@ -4859,6 +5177,9 @@ async def rollback(ctx):
     await update_winrate_channel(ctx.guild)
 
     wrong_winner = rollback_data.get("winner", "unknown").capitalize()
+    with connect() as conn:
+        conn.execute("UPDATE riot_games SET status='rolled_back' WHERE local_match_id=%s AND status='completed'",
+                     (rollback_data.get("match_id"),))
     last_result_rollback = None
 
     await send_embed(
