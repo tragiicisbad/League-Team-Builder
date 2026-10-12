@@ -128,7 +128,9 @@ class PrivacyTests(unittest.TestCase):
             for p in snapshot[side]:
                 p.update(name="Player", assigned_role="Top")
         conn = MagicMock()
-        conn.execute.return_value.fetchall.side_effect = [[], [(n,) for n in range(1, 10)], [(snapshot, "blue", datetime.now())]]
+        blue = [f"Top: Player{n}" for n in range(1, 6)]
+        red = [f"Top: Player{n}" for n in range(6, 11)]
+        conn.execute.return_value.fetchall.side_effect = [[], [(f"Player{n}", n != 10) for n in range(1, 11)], [(blue, red, "blue", datetime.now())]]
         with patch.object(riot, "connect") as connect:
             connect.return_value.__enter__.return_value = conn
             self.assertEqual(riot.public_data()["matches"], [])
@@ -142,11 +144,15 @@ class PrivacyTests(unittest.TestCase):
             for p in snapshot[side]:
                 p.update(name="Player", assigned_role="Top")
         conn = MagicMock()
-        conn.execute.return_value.fetchall.side_effect = [[], [(n,) for n in range(1, 11)], [(snapshot, "blue", datetime.now())]]
+        blue = [f"Top: Player{n}" for n in range(1, 6)]
+        red = [f"Top: Player{n}" for n in range(6, 11)]
+        conn.execute.return_value.fetchall.side_effect = [[("Player1", "Gold IV", 1200, 3, 2, "Top")], [(f"Player{n}", True) for n in range(1, 11)], [(json.dumps(blue), json.dumps(red), "blue", "2026-10-12 12:00")]]
         with patch.object(riot, "connect") as connect:
             connect.return_value.__enter__.return_value = conn
             result = riot.public_data()
         self.assertEqual(len(result["matches"]), 1)
+        self.assertEqual(result["leaderboard"][0]["wins"], 3)
+        self.assertEqual(result["matches"][0]["blue"][0]["name"], "Player1")
         self.assertNotIn("puuid", json.dumps(result))
         self.assertNotIn("discord_id", json.dumps(result))
 

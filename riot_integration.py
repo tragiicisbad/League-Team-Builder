@@ -23,6 +23,7 @@ def enabled():
 
 def setup():
     with connect() as conn:
+        conn.execute("ALTER TABLE players ADD COLUMN IF NOT EXISTS public_history BOOLEAN NOT NULL DEFAULT TRUE")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS riot_accounts (
                 discord_id BIGINT PRIMARY KEY REFERENCES players(discord_id) ON DELETE CASCADE,
@@ -86,25 +87,39 @@ def public_data():
     with connect() as conn:
         rows = conn.execute("""
             SELECT p.name, p.rank, p.rating, p.wins, p.losses, p.primary_role
-            FROM players p JOIN riot_accounts a ON a.discord_id=p.discord_id
-            WHERE a.public_history ORDER BY p.rating DESC, p.wins DESC, p.name LIMIT 200
+            FROM players p
+            WHERE p.public_history ORDER BY p.rating DESC, p.wins DESC, p.name
         """).fetchall()
-        consent = {str(row[0]) for row in conn.execute(
-            "SELECT discord_id FROM riot_accounts WHERE public_history"
-        ).fetchall()}
+        roster = conn.execute("SELECT name, public_history FROM players").fetchall()
         games = conn.execute("""
-            SELECT snapshot, winner, created_at FROM riot_games
-            WHERE status='completed' ORDER BY created_at DESC LIMIT 100
+            SELECT blue_team, red_team, winner, date_played FROM matches
+            ORDER BY id DESC LIMIT 200
         """).fetchall()
     history = []
-    for snapshot, winner, date in games:
-        players = snapshot["blue"] + snapshot["red"]
-        if not all(str(p["discord_id"]) in consent for p in players):
+    names = {}
+    for name, shared in roster:
+        names.setdefault(name, []).append(shared)
+    for blue, red, winner, date in games:
+        teams = {}
+        try:
+            for side, stored in (("blue", blue), ("red", red)):
+                entries = json.loads(stored) if isinstance(stored, str) else stored
+                teams[side] = []
+                for entry in entries:
+                    prefix, separator, name = entry.partition(":")
+                    role = prefix.split()[-1] if prefix.split() else ""
+                    if not separator or role not in ("Top", "Jungle", "Mid", "ADC", "Bot", "Support"):
+                        raise ValueError("Unknown historical player format")
+                    name = name.strip()
+                    # Legacy records contain names, so ambiguous or renamed accounts need review.
+                    if names.get(name) != [True]:
+                        raise ValueError("Participant is not unambiguously public")
+                    teams[side].append({"name": name, "role": role})
+            if len(teams["blue"]) != 5 or len(teams["red"]) != 5:
+                continue
+        except (ValueError, TypeError, AttributeError):
             continue
-        history.append({"winner": winner, "date": date.isoformat(), **{
-            side: [{"name": p["name"], "role": p["assigned_role"]} for p in snapshot[side]]
-            for side in ("blue", "red")
-        }})
+        history.append({"winner": winner, "date": str(date).replace(" ", "T"), **teams})
     return {"leaderboard": [dict(zip(("name", "rank", "rating", "wins", "losses", "role"), row))
                             for row in rows], "matches": history[:30]}
 
@@ -259,6 +274,7 @@ class TournamentService:
         app.router.add_post("/riot/callback", self.callback)
         app.router.add_get("/health", self.health)
         app.router.add_get("/", self.home)
+        app.router.add_get("/pcl-logo.png", self.logo)
         app.router.add_get("/riot.txt", self.verification)
         app.router.add_get("//riot.txt", self.verification)
         app.router.add_get("/api/standings", self.standings)
@@ -270,6 +286,9 @@ class TournamentService:
 
     async def home(self, req):
         return web.FileResponse(Path(__file__).with_name("website") / "index.html")
+
+    async def logo(self, req):
+        return web.FileResponse(Path(__file__).with_name("website") / "pcl-logo.png")
 
     async def health(self, req):
         return web.json_response({"status": "ok"})

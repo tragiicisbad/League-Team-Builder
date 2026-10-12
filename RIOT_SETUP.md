@@ -55,6 +55,16 @@ run in that process. No extra Python packages are required.
 
 ## Website
 
+Current season standings and manually recorded games now come directly from
+`players` and `matches`, without Riot linking. Signup opts players into public
+standings by default, including existing players on the first deployment of this
+change. `/sharehistory false` lets a player withdraw. Historical matches are
+published only if all saved names resolve to unique, currently public profiles;
+renamed, missing, or duplicate names are excluded pending review.
+
+The following original tournament-only description is superseded by this season
+data behavior.
+
 The leaderboard shows opted-in players, ratings, roles, wins, losses, and win
 rates. Match history shows completed tournament games only when all ten players
 currently consent. Withdrawn consent removes a player from the public leaderboard

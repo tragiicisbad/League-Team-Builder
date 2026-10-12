@@ -2781,11 +2781,11 @@ async def riotstatus(ctx):
 
 @bot.tree.command(name="sharehistory", description="Choose whether to appear on the public customs website")
 async def sharehistory(interaction: discord.Interaction, share: bool):
-    if not riot.account(interaction.user.id):
-        await interaction.response.send_message("Link your account with /linkriot first.", ephemeral=True)
+    if not get_player(interaction.user.id):
+        await interaction.response.send_message("Complete /signup first.", ephemeral=True)
         return
     with connect() as conn:
-        conn.execute("UPDATE riot_accounts SET public_history=%s WHERE discord_id=%s", (share, interaction.user.id))
+        conn.execute("UPDATE players SET public_history=%s WHERE discord_id=%s", (share, interaction.user.id))
     await interaction.response.send_message(
         f"Public leaderboard and match history sharing {'enabled' if share else 'disabled'}.", ephemeral=True
     )

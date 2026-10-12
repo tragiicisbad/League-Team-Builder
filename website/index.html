@@ -3,7 +3,12 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Community Customs</title>
+  <title>PCL | Prim Customs League</title>
+  <meta name="theme-color" content="#101214">
+  <link rel="icon" href="/pcl-logo.png" type="image/png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
     *{box-sizing:border-box}body{margin:0;background:#111416;color:#edf0f0;font:15px system-ui,sans-serif;letter-spacing:0}
     header{border-bottom:1px solid #343a3c;padding:25px max(20px,calc((100% - 1100px)/2));display:flex;align-items:center;gap:15px}
@@ -14,31 +19,81 @@
     #status{font-size:13px;color:#aebabc}.scroll{overflow:auto}table{width:100%;border-collapse:collapse;white-space:nowrap}th{text-align:left;color:#9dabad;font-size:12px;text-transform:uppercase;font-weight:600;padding:12px 14px;border-bottom:1px solid #465153}td{padding:15px 14px;border-bottom:1px solid #2d3436}td:first-child{color:#91a1a4;width:55px}td:nth-child(2){font-weight:600}td:nth-child(4){color:#60dfb1;font-variant-numeric:tabular-nums}
     .empty{padding:50px 20px;text-align:center;color:#aebabc}.match{border-bottom:1px solid #343a3c;padding:20px 0}.match h2{font-size:17px;margin:0 0 15px}.teams{display:grid;grid-template-columns:1fr 1fr;gap:30px}.team h3{font-size:14px;color:#74bbff}.team.red h3{color:#ff8f9b}.player{display:flex;gap:12px;margin:9px 0}.role{color:#9dabad;min-width:70px}time{float:right;font-size:13px;color:#aebabc;font-weight:400}footer{max-width:1140px;margin:25px auto;padding:20px;color:#8f9d9f;font-size:12px;border-top:1px solid #343a3c}footer a{color:#b5c8cb}[hidden]{display:none!important}
     @media(max-width:580px){h1{font-size:21px}.teams{gap:15px}.player{display:block}.role{display:block;font-size:12px}.match time{float:none;display:block;margin-top:8px}th,td{padding:12px 10px}}
+    body{background:#101214;color:#f0f2f3;font-size:14px}
+    header{padding:18px max(24px,calc((100% - 1200px)/2));background:#15181b;border-bottom:1px solid #303438;gap:14px}
+    header img{width:58px;height:58px;object-fit:cover;border-radius:6px}
+    .brand-name{font-size:23px;font-weight:750;color:#e4bf70}.brand-subtitle{font-size:12px;color:#a0aaad;margin-top:3px}
+    .region{margin-left:auto;color:#a2b6b8;font-size:12px;display:flex;align-items:center;gap:8px}.region::before{content:'';width:6px;height:6px;background:#58c7c5;border-radius:50%}
+    main{max-width:1248px;padding:40px 24px;min-height:70vh}.page-heading{display:flex;align-items:end;justify-content:space-between;margin-bottom:30px;gap:20px}
+    h1{font-size:32px;font-weight:650}.eyebrow{font-size:11px;color:#d8b66d;text-transform:uppercase;margin-bottom:10px}.page-heading p{color:#9aa5aa;margin:10px 0 0}
+    .summary{display:flex;gap:30px}.summary strong{display:block;font-size:22px;font-weight:600;color:#eef4f4}.summary span{font-size:11px;color:#96a3a7;display:block;margin-top:5px}
+    nav{gap:30px;margin-bottom:24px;border-color:#303438}nav button{padding:15px 0;font-size:14px}button[aria-selected=true]{color:#e4bf70;border-color:#e4bf70}
+    .tools{margin-bottom:20px;flex-wrap:wrap}.filters{display:flex;gap:12px;align-items:center;flex:1}input{width:260px;max-width:100%;padding:11px 13px;background:#181d20;border:1px solid #353e42;border-radius:5px;font-size:13px}
+    select{font:inherit;color:#d7dfe0;background:#181d20;border:1px solid #353e42;padding:10px 12px;border-radius:5px;max-width:100%}select:focus-visible{outline:2px solid #58c7c5;outline-offset:3px}
+    #status{font-size:11px;color:#8c9ca0}.scroll{border-top:1px solid #30383b}th{font-size:10px;padding:15px 18px;background:#171c1f;border-color:#30383b}td{padding:20px 18px;border-color:#252d30;font-size:13px}tbody tr:hover{background:#171e21}td:nth-child(4){color:#e6c276;font-weight:650}td:nth-child(3){color:#b5c1c5}td:nth-child(2){font-weight:550}.winrate{display:flex;align-items:center;gap:10px}.bar{height:4px;width:65px;background:#303b3e;overflow:hidden;border-radius:2px}.bar i{display:block;height:100%;background:#58c7c5}.empty{padding:85px 20px;color:#8b9a9e}.empty strong{display:block;font-size:18px;color:#c9d2d4;font-weight:500;margin-bottom:9px}
+    .match{padding:25px 0}.match h2{color:#e0e7e8;font-size:16px}.teams{gap:40px}.team h3{color:#58c7c5}.team.red h3{color:#ee9191}.player{padding:7px 0;border-bottom:1px solid #252d30}.role{font-size:12px}footer{max-width:1200px;margin:0 auto;padding:25px 0;font-size:11px;line-height:1.7;border-color:#303438;color:#77888e}footer strong{color:#b4bfc3;display:block;margin-bottom:8px;font-weight:500}
+    @media(max-width:700px){header{padding:15px 20px}header img{width:48px;height:48px}.brand-name{font-size:21px}.region{font-size:10px}.region span{display:none}main{padding:28px 20px}.page-heading{display:block}h1{font-size:27px}.summary{margin-top:25px;gap:30px}.summary strong{font-size:20px}.filters{width:100%;flex-wrap:wrap}input{flex:1;min-width:150px}#status{width:100%}th,td{padding:15px 12px}footer{margin:0 20px}.teams{gap:20px}}
+    :root{--gold:#e6c17b;--teal:#64d6d0;--ease:cubic-bezier(.22,1,.36,1)}
+    body{font-family:Inter,system-ui,sans-serif;background:#0d1012}
+    header{background:#121619;position:sticky;top:0;z-index:20;box-shadow:0 8px 30px #0003;border-bottom-color:#3a3529}
+    header img{width:64px;height:64px;border-radius:50%;box-shadow:0 0 0 1px #b59a5d66;transition:transform .6s var(--ease)}header img:hover{transform:rotate(-6deg) scale(1.06)}
+    .brand-name{font-family:'Barlow Condensed',sans-serif;font-size:30px;color:#f2d89c}.brand-subtitle{font-size:11px}
+    main{padding-top:0}.page-heading{position:relative;padding:48px 0 35px;align-items:center;border-bottom:1px solid #37372f;margin-bottom:0;min-height:205px}
+    .page-heading::before{content:'';position:absolute;top:0;left:0;width:60px;height:2px;background:var(--gold)}
+    .eyebrow{font-size:10px;color:#a5b4b7;display:flex;align-items:center;gap:10px}.eyebrow::before{content:'';width:18px;height:1px;background:var(--gold)}
+    h1{font-family:'Barlow Condensed',sans-serif;font-size:54px;line-height:1.05;text-transform:uppercase;font-weight:600}.page-heading p{font-size:12px;color:#91a3a9;margin-top:14px}
+    .summary{gap:0}.summary>div{padding:5px 25px;border-left:1px solid #3a4141}.summary strong{font-family:'Barlow Condensed',sans-serif;font-size:36px;color:var(--gold);font-variant-numeric:tabular-nums}.summary span{font-size:9px;margin-top:6px}
+    nav{position:relative;gap:35px;margin-bottom:28px;border-bottom-color:#303839;height:64px}nav button{height:64px;border:0!important;position:relative;transition:color .25s ease;display:flex;align-items:center;gap:10px;font-size:12px;font-weight:500}nav button:hover{color:#f2d89c}
+    .tab-number{font-size:9px;color:#6d8187;font-variant-numeric:tabular-nums}nav button[aria-selected=true] .tab-number{color:var(--gold)}
+    .tab-indicator{position:absolute;left:0;bottom:-1px;height:2px;width:135px;background:var(--gold);transition:transform .5s var(--ease),width .5s var(--ease);pointer-events:none}
+    input,select{background:#151b1f;border-color:#323e43;transition:border-color .25s,box-shadow .25s;font-size:12px;height:42px}input:hover,select:hover{border-color:#63716b}input:focus,select:focus{border-color:var(--gold);box-shadow:0 0 0 3px #e6c17b12;outline:none}.tools{margin-bottom:25px}
+    #status{display:flex;align-items:center;gap:7px}#status::before{content:'';height:5px;width:5px;background:var(--teal);border-radius:50%}
+    th{background:#182024;color:#8dabb2;height:48px;font-size:9px}td{height:72px;font-size:12px}.scroll{border-top-color:#697066}tbody tr{transition:background .25s;animation:row-in .65s var(--ease) both;animation-delay:calc(var(--row,0)*35ms)}tbody tr:hover{background:#1b282a}td:first-child{font-family:'Barlow Condensed',sans-serif;font-size:20px;color:#8da3aa}tbody tr:nth-child(-n+3) td:first-child{color:var(--gold)}
+    .rank-label{display:inline-flex;gap:8px;align-items:center}.rank-mark{width:7px;height:7px;background:var(--gold);transform:rotate(45deg)}.bar{width:80px}.bar i{animation:bar-in 1s var(--ease) both;transform-origin:left}
+    .empty{min-height:320px;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px;margin:0;padding:50px 20px;animation:row-in .7s var(--ease)}.empty img{width:90px;height:90px;border-radius:50%;box-shadow:0 0 0 1px #e6c17b44,0 16px 30px #0005;animation:emblem-in 1.2s var(--ease) both}.empty strong{margin:8px 0 0;font-family:'Barlow Condensed',sans-serif;font-size:24px;color:#d1dce0;font-weight:500;text-transform:uppercase}.empty span{font-size:11px;color:#81969d;text-align:center;max-width:300px;line-height:1.8}
+    section.entering{animation:view-in .5s var(--ease) both}.match{animation:row-in .6s var(--ease) both;border-color:#344245}.match h2{font-family:'Barlow Condensed',sans-serif;font-size:23px;text-transform:uppercase}.player{transition:background .25s,padding .25s}.player:hover{background:#172326;padding-left:8px}.team h3{font-size:12px}.match time{font-family:Inter,sans-serif;font-size:10px;text-transform:none}.team{border-top:2px solid #4db9b3;padding-top:10px}.team.red{border-color:#bc737e}
+    footer{padding-top:30px}footer strong{font-family:'Barlow Condensed',sans-serif;font-size:18px;color:var(--gold);margin-bottom:12px}
+    header,.page-heading,.tools{animation:row-in .8s var(--ease) both}.page-heading{animation-delay:.08s}.tools{animation-delay:.16s}
+    @keyframes row-in{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}@keyframes view-in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}@keyframes emblem-in{from{opacity:0;transform:scale(.85) rotate(-10deg)}to{opacity:1;transform:scale(1) rotate(0)}}@keyframes bar-in{from{transform:scaleX(0)}to{transform:scaleX(1)}}
+    @media(min-width:1000px){main{min-height:76vh}.page-heading{min-height:230px}}
+    @media(max-width:700px){header img{width:50px;height:50px}.brand-name{font-size:25px}.page-heading{padding:32px 0 25px}h1{font-size:40px}.summary{margin-top:24px}.summary>div{padding:0 25px 0 15px}.summary strong{font-size:28px}.summary>div:first-child{padding-left:0;border-left:0}nav{gap:25px}.empty{min-height:300px}.empty img{width:80px;height:80px}.page-heading p{font-size:11px}}
+    td.winrate{display:table-cell}.winrate .bar{display:inline-block;margin-left:10px;vertical-align:middle}
+    @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
   </style>
 </head>
 <body>
-  <header><img src="https://ddragon.leagueoflegends.com/cdn/5.5.1/img/ui/champion.png" alt=""><h1>Community Customs</h1></header>
+  <header><img src="/pcl-logo.png" alt="PCL official logo"><div><div class="brand-name">PCL</div><div class="brand-subtitle">Prim Customs League</div></div><div class="region">NA <span>/ SUMMONER'S RIFT</span></div></header>
   <main>
-    <nav aria-label="Standings views"><button id="leader-tab" role="tab" aria-selected="true">Leaderboard</button><button id="matches-tab" role="tab" aria-selected="false">Match History</button></nav>
-    <div class="tools"><input id="search" aria-label="Search players" placeholder="Search players"><span id="status" role="status">Loading...</span></div>
+    <div class="page-heading"><div><div class="eyebrow">Prim Customs League</div><h1 id="page-title">League Standings</h1><p id="page-description">The players. The results. The climb.</p></div><div class="summary"><div><strong id="player-count">--</strong><span>PUBLIC PLAYERS</span></div><div><strong id="match-count">--</strong><span>RECENT MATCHES</span></div></div></div>
+    <nav aria-label="Standings views" role="tablist"><button id="leader-tab" role="tab" aria-selected="true" aria-controls="leaders"><span class="tab-number">01</span>Leaderboard</button><button id="matches-tab" role="tab" aria-selected="false" aria-controls="matches"><span class="tab-number">02</span>Match History</button><span class="tab-indicator" id="tab-indicator"></span></nav>
+    <div class="tools"><div class="filters" id="filters"><input id="search" aria-label="Search players" placeholder="Search players"><select id="role-filter" aria-label="Filter by role"><option value="">All roles</option><option>Top</option><option>Jungle</option><option>Mid</option><option>Bot</option><option>Support</option><option>Fill</option></select></div><span id="status" role="status">Loading standings...</span></div>
     <section id="leaders"><div class="scroll"><table><thead><tr><th>#</th><th>Player</th><th>Rank</th><th>MMR</th><th>Role</th><th>W / L</th><th>Win Rate</th></tr></thead><tbody id="rows"></tbody></table></div><p id="no-players" class="empty" hidden>No public standings yet.</p></section>
     <section id="matches" hidden></section>
   </main>
-  <footer>Community Customs is not endorsed by Riot Games and does not reflect the views or opinions of Riot Games or anyone officially involved in producing or managing Riot Games properties. Riot Games and all associated properties are trademarks or registered trademarks of Riot Games, Inc.</footer>
+  <footer><strong>PCL / Prim Customs League</strong>PCL is not endorsed by Riot Games and does not reflect the views or opinions of Riot Games or anyone officially involved in producing or managing Riot Games properties. Riot Games and all associated properties are trademarks or registered trademarks of Riot Games, Inc.</footer>
   <script>
     const $ = id => document.getElementById(id);
     let data = {leaderboard:[],matches:[]};
     const role = value => value === 'ADC' ? 'Bot' : value;
     function element(tag,text,className){const node=document.createElement(tag);node.textContent=text;if(className)node.className=className;return node}
+    function emptyState(container,title,description){container.replaceChildren();const image=document.createElement('img');image.src='/pcl-logo.png';image.alt='';container.append(image,element('strong',title),element('span',description))}
+    function moveIndicator(){const active=document.querySelector('nav button[aria-selected="true"]');$('tab-indicator').style.width=`${active.offsetWidth}px`;$('tab-indicator').style.transform=`translateX(${active.offsetLeft}px)`}
     function render(){
+      $('player-count').textContent=data.leaderboard.length;
+      $('match-count').textContent=data.matches.length;
       $('rows').replaceChildren();
       data.leaderboard.forEach((p,index)=>{
         if(!p.name.toLowerCase().includes($('search').value.toLowerCase()))return;
+        if($('role-filter').value && role(p.role)!==$('role-filter').value)return;
         const row=document.createElement('tr'),games=p.wins+p.losses;
+        row.style.setProperty('--row',Math.min(index,12));
         [index+1,p.name,p.rank,p.rating,role(p.role),`${p.wins} / ${p.losses}`,games?`${Math.round(p.wins/games*100)}%`:'--'].forEach(value=>row.append(element('td',value)));
+        const rankCell=row.children[2],label=element('span','','rank-label');label.append(element('span','','rank-mark'),element('span',p.rank));rankCell.replaceChildren(label);
+        if(games){const cell=row.lastChild;cell.className='winrate';const bar=element('span','','bar'),fill=element('i','');fill.style.width=`${p.wins/games*100}%`;bar.append(fill);cell.append(bar)}
         $('rows').append(row);
       });
       $('no-players').hidden=$('rows').children.length>0;
+      emptyState($('no-players'),data.leaderboard.length?'No players found':'The ladder awaits',data.leaderboard.length?'Try another name or role.':'Public player standings will appear here when available.');
       $('matches').replaceChildren();
       data.matches.forEach(match=>{
         const article=element('article','','match'),heading=element('h2',`${match.winner==='blue'?'Blue':'Red'} Team Wins`),date=element('time',new Date(match.date).toLocaleString());
@@ -47,11 +102,13 @@
         ['blue','red'].forEach(side=>{const team=element('div','',`team ${side}`);team.append(element('h3',`${side==='blue'?'Blue':'Red'} Team`));match[side].forEach(p=>{const line=element('div','','player');line.append(element('span',role(p.role),'role'),element('span',p.name));team.append(line)});teams.append(team)});
         article.append(teams);$('matches').append(article);
       });
-      if(!data.matches.length)$('matches').append(element('p','No public matches yet.','empty'));
+      if(!data.matches.length){const empty=element('div','','empty');emptyState(empty,'A new chapter awaits','Completed public matches will appear here.');$('matches').append(empty)}
     }
     async function refresh(){try{const response=await fetch('/api/standings');if(!response.ok)throw Error();data=await response.json();render();$('status').textContent=`Updated ${new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}`}catch{$('status').textContent='Standings unavailable. Retrying...'}}
-    function show(matches){$('leaders').hidden=matches;$('matches').hidden=!matches;$('search').hidden=matches;$('leader-tab').setAttribute('aria-selected',String(!matches));$('matches-tab').setAttribute('aria-selected',String(matches))}
+    function show(matches){$('leaders').hidden=matches;$('matches').hidden=!matches;$('filters').hidden=matches;$('page-title').textContent=matches?'Match History':'League Standings';$('page-description').textContent=matches?'Every game leaves a mark.':'The players. The results. The climb.';$('leader-tab').setAttribute('aria-selected',String(!matches));$('matches-tab').setAttribute('aria-selected',String(matches));const panel=$(matches?'matches':'leaders');panel.classList.remove('entering');void panel.offsetWidth;panel.classList.add('entering');moveIndicator()}
     $('leader-tab').onclick=()=>show(false);$('matches-tab').onclick=()=>show(true);$('search').oninput=render;
+    $('role-filter').onchange=render;
+    window.addEventListener('resize',moveIndicator);document.fonts.ready.then(moveIndicator);moveIndicator();
     refresh();setInterval(refresh,30000);
   </script>
 </body>
