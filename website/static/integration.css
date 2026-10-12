@@ -67,3 +67,6 @@ button:disabled,input:disabled,select:disabled{opacity:.55;cursor:not-allowed}
   .footer-links{gap:20px;flex-wrap:wrap}.legal{overflow-wrap:anywhere}
 }
 @media(max-width:360px){.hero-copy h1{font-size:36px}.brand strong{font-size:12px}.panel-top h3{font-size:16px}}
+.mod-dashboard{box-sizing:border-box;width:min(760px,calc(100% - 32px));max-height:calc(100dvh - 32px);overflow:auto;padding:24px;border:1px solid var(--line-strong);border-radius:8px;background:var(--panel);color:var(--silver);color-scheme:dark}
+.mod-dashboard::backdrop{background:#05080bd9}.mod-actions{display:flex;flex-wrap:wrap;gap:10px}.mod-ratings{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px}.mod-dashboard input,.mod-dashboard select{box-sizing:border-box;font-size:16px;min-height:44px}.mod-dashboard .profile-heading button{color:var(--silver)}
+@media(max-width:700px){.mod-ratings{grid-template-columns:repeat(2,minmax(0,1fr))}.mod-dashboard{padding:20px}.mod-actions .button{flex:1;min-height:44px}}

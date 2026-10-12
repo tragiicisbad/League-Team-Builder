@@ -2822,7 +2822,7 @@ async def start_tournament_service():
         last_match_history_channel_id = state.get("history_channel_id")
         last_teams_embed_description = f"Tournament lobby code: `{game['code']}`"
         active_betting_id = state.get("betting_id")
-    tournament_service = riot.TournamentService(resolve_tournament_result, sync_roles=website_sync_roles, join_queue=website_join_queue, leave_queue=website_leave_queue, queue_status=website_queue_status, ready_queue=website_queue_ready, voice=website_voice_channels, activity=lambda: {
+    tournament_service = riot.TournamentService(resolve_tournament_result, moderate=website_moderate, sync_roles=website_sync_roles, join_queue=website_join_queue, leave_queue=website_leave_queue, queue_status=website_queue_status, ready_queue=website_queue_ready, voice=website_voice_channels, activity=lambda: {
         "queued": len(player_queue), "capacity": MAX_QUEUE_SIZE,
         "waitlist": len(waitlist_queue),
         "state": "In game" if queue_locked else "Ready check" if ready_check else "Queue open" if queue_message_id else "No active queue"
@@ -2900,6 +2900,82 @@ async def restore_queue_snapshot():
         restart_queue_expire_task()
         await update_queue_message()
     queue_snapshot_task = asyncio.create_task(persist_queue_loop())
+
+
+website_mod_lock = asyncio.Lock()
+
+
+async def website_moderate(discord_id, body):
+    from aiohttp import web
+    from database import get_all_player_ids
+    global queue_locked, queue_expire_at
+    guild = bot.get_guild(1515283503657259108)
+    if guild is None or not bot.is_ready():
+        raise web.HTTPServiceUnavailable(text="Discord is reconnecting.")
+    try:
+        member = await guild.fetch_member(discord_id)
+    except discord.NotFound:
+        raise web.HTTPForbidden(text="Moderator access required.")
+    except discord.HTTPException:
+        raise web.HTTPServiceUnavailable(text="Could not verify Discord permissions.")
+    if not any(role.id == 1515379329566245054 for role in member.roles):
+        raise web.HTTPForbidden(text="Moderator access required.")
+    async with website_mod_lock:
+        if body is not None:
+            action = body.get("action")
+            if action in {"start", "timer"}:
+                minutes = body.get("minutes", 60)
+                if type(minutes) is not int or not 1 <= minutes <= 1440:
+                    raise web.HTTPBadRequest(text="Duration must be 1 to 1440 minutes.")
+                if action == "start":
+                    if queue_message_id or player_queue or queue_locked:
+                        raise web.HTTPConflict(text="A queue or game already exists.")
+                    channel = discord.utils.get(guild.text_channels, name=GAMETIME_CHANNEL_NAME)
+                    if channel is None:
+                        raise web.HTTPConflict(text="#gametime was not found.")
+                    await create_queue_message(channel, duration_seconds=minutes * 60)
+                else:
+                    if not queue_message_id or queue_locked:
+                        raise web.HTTPConflict(text="An open queue is required.")
+                    queue_expire_at = datetime.now() + timedelta(minutes=minutes)
+                    restart_queue_expire_task()
+                    await update_queue_message()
+            elif action == "cancel":
+                if queue_locked:
+                    raise web.HTTPConflict(text="Cannot cancel a game already in progress.")
+                await clear_5v5_queue_state("Canceled by a website moderator.")
+                await delete_queue_message()
+                await update_queue_message()
+            elif action == "rating":
+                uid = body.get("player_id")
+                ratings = body.get("ratings")
+                try:
+                    uid = int(uid)
+                except (ValueError, TypeError):
+                    raise web.HTTPBadRequest(text="Invalid player.")
+                if not isinstance(ratings, dict) or set(ratings) != set(ROLES) or any(type(v) is not int or not 0 <= v <= 10000 for v in ratings.values()):
+                    raise web.HTTPBadRequest(text="Provide all five lane ratings between 0 and 10000.")
+                if not get_player(uid):
+                    raise web.HTTPNotFound(text="Player not found.")
+                from psycopg import sql
+                with connect() as conn:
+                    assignments = sql.SQL(', ').join(sql.SQL('{} = %s').format(sql.Identifier(role_column(role))) for role in ROLES)
+                    conn.execute(sql.SQL('UPDATE players SET {} WHERE discord_id = %s').format(assignments), tuple(ratings[role] for role in ROLES) + (uid,))
+                rating = update_overall_rating_from_selected_roles(uid)
+                target = guild.get_member(uid)
+                if target:
+                    await sync_member_rank_role(target, rating)
+                refresh_player_in_queues(uid)
+                await update_queue_message()
+            else:
+                raise web.HTTPBadRequest(text="Unknown moderator action.")
+            print(f"Website moderator {discord_id}: {action}; player={body.get('player_id')}; ratings={body.get('ratings')}")
+        players = []
+        for uid in get_all_player_ids():
+            player = get_player(uid)
+            if player:
+                players.append({"id": str(uid), "name": player["name"], "rating": player["rating"], "rank": rank_for_rating(player["rating"]), "ratings": player["role_ratings"]})
+        return {"players": sorted(players, key=lambda p:p["name"].casefold()), "queue": website_queue_status(discord_id)}
 
 
 def website_queue_status(discord_id):

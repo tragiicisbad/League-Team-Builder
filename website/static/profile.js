@@ -1,6 +1,80 @@
 (() => {
   const get = id => document.getElementById(id);
   let account = null;
+  const modButton = document.createElement('button');
+  modButton.type = 'button'; modButton.textContent = 'Moderator'; modButton.hidden = true;
+  document.getElementById('nav-links').append(modButton);
+  const modDialog = document.createElement('dialog');
+  modDialog.className = 'mod-dashboard';
+  const make = (tag, text) => {const el = document.createElement(tag); if (text) el.textContent = text; return el;};
+  const modHeader = make('div'); modHeader.className = 'profile-heading';
+  const modClose = make('button', 'Close'); modClose.type = 'button';
+  modHeader.append(make('h2','Moderator dashboard'), modClose);
+  modClose.addEventListener('click',()=>modDialog.close());
+  const modStatus = make('p'); modStatus.setAttribute('role','status');
+  const durationLabel = make('label','Queue duration (minutes)'); durationLabel.className = 'profile-field';
+  const duration = make('input'); duration.type = 'number'; duration.min = '1'; duration.max = '1440'; duration.value = '60'; durationLabel.append(duration);
+  const modActions = make('div'); modActions.className = 'mod-actions';
+  const searchLabel = make('label','Find player'); searchLabel.className = 'profile-field';
+  const search = make('input'); search.type = 'search'; searchLabel.append(search);
+  const playerLabel = make('label','Player'); playerLabel.className = 'profile-field';
+  const playerSelect = make('select'); playerLabel.append(playerSelect);
+  const ratingForm = make('form');
+  const ratingFields = make('div'); ratingFields.className = 'mod-ratings';
+  const inputs = {};
+  ['Top','Jungle','Mid','ADC','Support'].forEach(role=>{
+    const label = make('label',role === 'ADC' ? 'Bot' : role); label.className = 'profile-field';
+    const input = make('input'); input.type = 'number'; input.min = '0'; input.max = '10000'; input.required = true;
+    inputs[role] = input; label.append(input); ratingFields.append(label);
+  });
+  const saveRatings = make('button','Save ratings'); saveRatings.type = 'submit'; saveRatings.className = 'button button--primary';
+  ratingForm.append(ratingFields, saveRatings);
+  modDialog.append(modHeader, modStatus, durationLabel, modActions, searchLabel, playerLabel, ratingForm);
+  document.body.append(modDialog);
+  let modData = null;
+  let modBusy = false;
+  function showPlayer() {
+    const player = modData?.players.find(p=>p.id === playerSelect.value);
+    Object.entries(inputs).forEach(([role,input])=>{input.value = player?.ratings[role] ?? ''; input.disabled = !player;});
+    saveRatings.disabled = !player;
+  }
+  function filterPlayers() {
+    const previous = playerSelect.value;
+    playerSelect.replaceChildren();
+    (modData?.players || []).filter(p=>p.name.toLowerCase().includes(search.value.toLowerCase()) || p.id.includes(search.value)).forEach(p=>{
+      const option = make('option', p.name + ' / ' + p.rank + ' / ' + p.rating); option.value = p.id; playerSelect.append(option);
+    });
+    if ([...playerSelect.options].some(o=>o.value === previous)) playerSelect.value = previous;
+    showPlayer();
+  }
+  search.addEventListener('input',filterPlayers); playerSelect.addEventListener('change',showPlayer);
+  async function modRequest(body) {
+    if (modBusy) return;
+    modBusy = true;
+    modDialog.querySelectorAll('button').forEach(b=>{if (b !== modClose) b.disabled = true;});
+    try {
+      const response = await fetch('/api/mod', body ? {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(20000)} : {cache:'no-store',signal:AbortSignal.timeout(20000)});
+      if (!response.ok) throw Error(await response.text());
+      modData = await response.json(); filterPlayers();
+      modStatus.textContent = (body ? 'Saved. ' : '') + (modData.queue.locked ? 'Game in progress.' : modData.queue.active ? 'Queue active.' : 'No active queue.');
+      modButton.hidden = false;
+      if (body) await refreshQueue();
+    } catch(error) {modStatus.textContent = error.message || 'Dashboard unavailable.';}
+    finally {modBusy = false; modActions.querySelectorAll('button').forEach(b=>b.disabled = false); showPlayer();}
+  }
+  [['start','Start queue'],['timer','Update timer'],['cancel','Cancel queue']].forEach(([action,title])=>{
+    const button = make('button',title); button.type = 'button'; button.className = 'button';
+    button.addEventListener('click',()=>{
+      if (action === 'cancel' && !confirm('Cancel the queue and clear every queued and waitlisted player?')) return;
+      modRequest({action,minutes:Number(duration.value)});
+    }); modActions.append(button);
+  });
+  ratingForm.addEventListener('submit',event=>{
+    event.preventDefault();
+    if (!playerSelect.value || modBusy) return;
+    modRequest({action:'rating',player_id:playerSelect.value,ratings:Object.fromEntries(Object.entries(inputs).map(([role,input])=>[role,Number(input.value)]))});
+  });
+  modButton.addEventListener('click',()=>{modDialog.showModal();modRequest();});
   const avoidedField = document.createElement('label');
   avoidedField.className = 'profile-field';
   avoidedField.textContent = 'Avoided role (optional)';
@@ -185,6 +259,8 @@
     } catch {account = null;}
     display();
     await refreshStatus();
+    if (account?.authenticated && !modData) await modRequest();
+    if (!account?.authenticated) {modData = null; modButton.hidden = true; if (modDialog.open) modDialog.close();}
   }
   authLink.addEventListener('click', event => {if (!account?.login_available) {event.preventDefault();get('profile-feedback').textContent = 'Discord sign-in needs to be configured on the server.';}});
   async function open(role) {

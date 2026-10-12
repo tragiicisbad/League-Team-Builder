@@ -18,7 +18,8 @@ def digest(value):
 
 
 class WebsiteAuth:
-    def __init__(self, sync_roles=None, join_queue=None, leave_queue=None, queue_status=None, ready_queue=None):
+    def __init__(self, sync_roles=None, join_queue=None, leave_queue=None, queue_status=None, ready_queue=None, moderate=None):
+        self.moderate = moderate
         self.queue_status = queue_status
         self.ready_queue = ready_queue
         self.leave_queue = leave_queue
@@ -52,6 +53,8 @@ class WebsiteAuth:
         app.router.add_post("/api/queue/leave", self.queue_leave)
         app.router.add_get("/api/queue/me", self.queue_me)
         app.router.add_post("/api/queue/ready", self.queue_ready)
+        app.router.add_get("/api/mod", self.mod_read)
+        app.router.add_post("/api/mod", self.mod_write)
         app.router.add_post("/auth/logout", self.logout)
 
     def check_origin(self, req):
@@ -217,6 +220,29 @@ class WebsiteAuth:
             raise web.HTTPServiceUnavailable()
         await self.ready_queue(int(row[0]))
         return web.json_response({"ready":True}, headers={"Cache-Control":"no-store"})
+
+    async def mod_read(self, req):
+        row = self.current(req)
+        if not row:
+            raise web.HTTPUnauthorized()
+        if self.moderate is None:
+            raise web.HTTPServiceUnavailable()
+        return web.json_response(await self.moderate(int(row[0]), None), headers={"Cache-Control":"no-store"})
+
+    async def mod_write(self, req):
+        self.check_origin(req)
+        row = self.current(req)
+        if not row:
+            raise web.HTTPUnauthorized()
+        if self.moderate is None:
+            raise web.HTTPServiceUnavailable()
+        try:
+            body = await req.json()
+        except ValueError:
+            raise web.HTTPBadRequest()
+        if not isinstance(body, dict):
+            raise web.HTTPBadRequest()
+        return web.json_response(await self.moderate(int(row[0]), body), headers={"Cache-Control":"no-store"})
 
     async def logout(self, req):
         self.check_origin(req)

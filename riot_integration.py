@@ -210,7 +210,8 @@ def verified_winner(match, snapshot):
 
 
 class TournamentService:
-    def __init__(self, resolve, activity=None, voice=None, sync_roles=None, join_queue=None, leave_queue=None, queue_status=None, ready_queue=None):
+    def __init__(self, resolve, activity=None, voice=None, sync_roles=None, join_queue=None, leave_queue=None, queue_status=None, ready_queue=None, moderate=None):
+        self.moderate = moderate
         self.queue_status = queue_status
         self.ready_queue = ready_queue
         self.leave_queue = leave_queue
@@ -279,7 +280,7 @@ class TournamentService:
         if self.runner is not None:
             return
         app = web.Application(client_max_size=16384)
-        auth = WebsiteAuth(sync_roles=self.sync_roles, join_queue=self.join_queue, leave_queue=self.leave_queue, queue_status=self.queue_status, ready_queue=self.ready_queue)
+        auth = WebsiteAuth(sync_roles=self.sync_roles, join_queue=self.join_queue, leave_queue=self.leave_queue, queue_status=self.queue_status, ready_queue=self.ready_queue, moderate=self.moderate)
         if auth.configured:
             auth.setup()
         auth.routes(app)
