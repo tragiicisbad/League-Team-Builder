@@ -2812,7 +2812,11 @@ async def start_tournament_service():
         last_match_history_channel_id = state.get("history_channel_id")
         last_teams_embed_description = f"Tournament lobby code: `{game['code']}`"
         active_betting_id = state.get("betting_id")
-    tournament_service = riot.TournamentService(resolve_tournament_result)
+    tournament_service = riot.TournamentService(resolve_tournament_result, activity=lambda: {
+        "queued": len(player_queue), "capacity": MAX_QUEUE_SIZE,
+        "waitlist": len(waitlist_queue),
+        "state": "In game" if queue_locked else "Ready check" if ready_check else "Queue open" if queue_message_id else "No active queue"
+    })
     await tournament_service.start()
 
 

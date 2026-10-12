@@ -209,8 +209,9 @@ def verified_winner(match, snapshot):
 
 
 class TournamentService:
-    def __init__(self, resolve):
+    def __init__(self, resolve, activity=None):
         self.resolve = resolve
+        self.activity = activity
         self.runner = None
         self.task = None
         self.lock = asyncio.Lock()
@@ -302,4 +303,6 @@ class TournamentService:
             data = await asyncio.to_thread(public_data)
         except Exception:
             raise web.HTTPServiceUnavailable(text="Standings temporarily unavailable")
+        if self.activity:
+            data["activity"] = self.activity()
         return web.json_response(data, headers={"Cache-Control": "no-store"})
