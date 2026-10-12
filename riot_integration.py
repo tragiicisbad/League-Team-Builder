@@ -260,6 +260,7 @@ class TournamentService:
         app.router.add_get("/health", self.health)
         app.router.add_get("/", self.home)
         app.router.add_get("/riot.txt", self.verification)
+        app.router.add_get("//riot.txt", self.verification)
         app.router.add_get("/api/standings", self.standings)
         self.runner = web.AppRunner(app)
         await self.runner.setup()
