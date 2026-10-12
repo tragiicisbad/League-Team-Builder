@@ -13,8 +13,6 @@
   modHeader.append(make('h2','Moderator dashboard'), modClose);
   modClose.addEventListener('click',()=>{location.hash = 'home';});
   const modStatus = make('p'); modStatus.setAttribute('role','status');
-  const durationLabel = make('label','Queue duration (minutes)'); durationLabel.className = 'profile-field';
-  const duration = make('input'); duration.type = 'number'; duration.min = '1'; duration.max = '1440'; duration.value = '60'; durationLabel.append(duration);
   const modActions = make('div'); modActions.className = 'mod-actions';
   const searchLabel = make('label','Find player'); searchLabel.className = 'profile-field';
   const search = make('input'); search.type = 'search'; searchLabel.append(search);
@@ -23,19 +21,47 @@
   const ratingForm = make('form');
   const ratingFields = make('div'); ratingFields.className = 'mod-ratings';
   const inputs = {};
+  const fineRatings = {};
   ['Top','Jungle','Mid','ADC','Support'].forEach(role=>{
     const label = make('label',role === 'ADC' ? 'Bot' : role); label.className = 'profile-field';
-    const input = make('input'); input.type = 'number'; input.min = '0'; input.max = '10000'; input.required = true;
-    inputs[role] = input; label.append(input); ratingFields.append(label);
+    const input = make('select'); input.required = true;
+    const fine = make('input'); fine.type = 'number'; fine.min = '0'; fine.max = '10000'; fine.step = '1'; fine.required = true;
+    fine.setAttribute('aria-label', (role === 'ADC' ? 'Bot' : role) + ' exact rating');
+    input.addEventListener('change',()=>{fine.value = input.value;});
+    fine.addEventListener('input',()=>{input.value = [...input.options].some(option=>option.value === fine.value) ? fine.value : '';});
+    input.required = false;
+    fineRatings[role] = fine;
+    inputs[role] = input; label.append(input, fine); ratingFields.append(label);
   });
   const saveRatings = make('button','Save ratings'); saveRatings.type = 'submit'; saveRatings.className = 'button button--primary';
   ratingForm.append(ratingFields, saveRatings);
   const queueSection = make('section');
-  queueSection.append(make('h3','Active queue'), durationLabel, modActions);
+  queueSection.append(make('h3','Active queue'), modActions);
   const modQueueList = make('div'); queueSection.append(modQueueList);
   const playerSection = make('section');
   playerSection.append(make('h3','Signup player ratings'), searchLabel, playerLabel, ratingForm);
   const modLayout = make('div'); modLayout.className = 'mod-layout'; modLayout.append(queueSection, playerSection);
+  const accountSection = make('section'); accountSection.className = 'mod-accounts';
+  const accountHeading = make('h3','Website accounts');
+  const accountSearchLabel = make('label','Find website account'); accountSearchLabel.className = 'profile-field';
+  const accountSearch = make('input'); accountSearch.type = 'search'; accountSearchLabel.append(accountSearch);
+  const accountList = make('div');
+  accountSection.append(accountHeading, accountSearchLabel, accountList); modLayout.append(accountSection);
+  function renderAccounts() {
+    const accounts = modData?.accounts || [];
+    accountHeading.textContent = 'Website accounts (' + accounts.length + ')';
+    accountList.replaceChildren();
+    const query = accountSearch.value.trim().toLowerCase();
+    const matches = accounts.filter(a=>[a.name,a.id,a.signup_name || ''].some(value=>value.toLowerCase().includes(query)));
+    matches.forEach(account=>{
+      const row = make('div'); row.className = 'mod-account-row';
+      const identity = make('div'); identity.append(make('strong',account.name),make('small',account.id));
+      row.append(identity,make('span',account.signup_completed ? 'Signup complete / ' + account.signup_name : 'Website only / Signup pending'));
+      accountList.append(row);
+    });
+    if (!matches.length) accountList.append(make('p',accounts.length ? 'No matching accounts.' : 'No website accounts yet.'));
+  }
+  accountSearch.addEventListener('input',renderAccounts);
   modDialog.append(modHeader, modStatus, modLayout);
   document.getElementById('homepage').before(modDialog);
   let modData = null;
@@ -58,7 +84,17 @@
   }
   function showPlayer() {
     const player = modData?.players.find(p=>p.id === playerSelect.value);
-    Object.entries(inputs).forEach(([role,input])=>{input.value = player?.ratings[role] ?? ''; input.disabled = !player;});
+    Object.entries(inputs).forEach(([role,input])=>{
+      input.replaceChildren();
+      const current = player?.ratings[role];
+      const options = modData?.rating_options || [];
+      if (current != null && !options.some(option=>option.value === current)) {
+        const option = make('option','Current rating - ' + current); option.value = current; input.append(option);
+      }
+      options.forEach(item=>{const option = make('option',item.label + ' - ' + item.value); option.value = item.value; input.append(option);});
+      input.value = current ?? ''; input.disabled = !player;
+      fineRatings[role].value = current ?? ''; fineRatings[role].disabled = !player;
+    });
     saveRatings.disabled = !player;
   }
   function filterPlayers() {
@@ -78,24 +114,24 @@
     try {
       const response = await fetch('/api/mod', body ? {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(20000)} : {cache:'no-store',signal:AbortSignal.timeout(20000)});
       if (!response.ok) throw Error(await response.text());
-      modData = await response.json(); filterPlayers(); renderModQueue();
+      modData = await response.json(); filterPlayers(); renderModQueue(); renderAccounts();
       modStatus.textContent = (body ? 'Saved. ' : '') + (modData.queue.locked ? 'Game in progress.' : modData.queue.active ? 'Queue active.' : 'No active queue.');
       modButton.hidden = false;
       if (body) await refreshQueue();
     } catch(error) {modStatus.textContent = error.message || 'Dashboard unavailable.'; if (!body) {modData = null; modButton.hidden = true; modLayout.hidden = true;}}
     finally {modBusy = false; modActions.querySelectorAll('button').forEach(b=>b.disabled = false); showPlayer();}
   }
-  [['start','Start queue'],['timer','Update timer'],['cancel','Cancel queue']].forEach(([action,title])=>{
+  [['start','Start queue'],['cancel','Cancel queue']].forEach(([action,title])=>{
     const button = make('button',title); button.type = 'button'; button.className = 'button';
     button.addEventListener('click',()=>{
       if (action === 'cancel' && !confirm('Cancel the queue and clear every queued and waitlisted player?')) return;
-      modRequest({action,minutes:Number(duration.value)});
+      modRequest({action});
     }); modActions.append(button);
   });
   ratingForm.addEventListener('submit',event=>{
     event.preventDefault();
     if (!playerSelect.value || modBusy) return;
-    modRequest({action:'rating',player_id:playerSelect.value,ratings:Object.fromEntries(Object.entries(inputs).map(([role,input])=>[role,Number(input.value)]))});
+    modRequest({action:'rating',player_id:playerSelect.value,ratings:Object.fromEntries(Object.entries(fineRatings).map(([role,input])=>[role,Number(input.value)]))});
   });
   function routeModerator() {
     modDialog.hidden = location.hash !== '#moderator';

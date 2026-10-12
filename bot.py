@@ -2923,23 +2923,13 @@ async def website_moderate(discord_id, body):
     async with website_mod_lock:
         if body is not None:
             action = body.get("action")
-            if action in {"start", "timer"}:
-                minutes = body.get("minutes", 60)
-                if type(minutes) is not int or not 1 <= minutes <= 1440:
-                    raise web.HTTPBadRequest(text="Duration must be 1 to 1440 minutes.")
-                if action == "start":
-                    if queue_message_id or player_queue or queue_locked:
-                        raise web.HTTPConflict(text="A queue or game already exists.")
-                    channel = discord.utils.get(guild.text_channels, name=GAMETIME_CHANNEL_NAME)
-                    if channel is None:
-                        raise web.HTTPConflict(text="#gametime was not found.")
-                    await create_queue_message(channel, duration_seconds=minutes * 60)
-                else:
-                    if not queue_message_id or queue_locked:
-                        raise web.HTTPConflict(text="An open queue is required.")
-                    queue_expire_at = datetime.now() + timedelta(minutes=minutes)
-                    restart_queue_expire_task()
-                    await update_queue_message()
+            if action == "start":
+                if queue_message_id or player_queue or queue_locked:
+                    raise web.HTTPConflict(text="A queue or game already exists.")
+                channel = discord.utils.get(guild.text_channels, name=GAMETIME_CHANNEL_NAME)
+                if channel is None:
+                    raise web.HTTPConflict(text="#gametime was not found.")
+                await create_queue_message(channel)
             elif action == "cancel":
                 if queue_locked:
                     raise web.HTTPConflict(text="Cannot cancel a game already in progress.")
@@ -2961,7 +2951,8 @@ async def website_moderate(discord_id, body):
                     raise web.HTTPBadRequest(text="Invalid player.")
                 if not isinstance(ratings, dict) or set(ratings) != set(ROLES) or any(type(v) is not int or not 0 <= v <= 10000 for v in ratings.values()):
                     raise web.HTTPBadRequest(text="Provide all five lane ratings between 0 and 10000.")
-                if not get_player(uid):
+                existing = get_player(uid)
+                if not existing:
                     raise web.HTTPNotFound(text="Player not found.")
                 from psycopg import sql
                 with connect() as conn:
@@ -2984,7 +2975,16 @@ async def website_moderate(discord_id, body):
         queue = website_queue_status(discord_id)
         queue["players"] = [{"id":str(uid),"name":p["name"],"rank":rank_for_rating(p["rating"]),"ready":bool(ready_check and uid in ready_check["confirmed"])} for uid,p in player_queue.items()]
         queue["waitlist"] = [{"id":str(uid),"name":p["name"],"rank":rank_for_rating(p["rating"])} for uid,p in waitlist_queue.items()]
-        return {"players": sorted(players, key=lambda p:p["name"].casefold()), "queue": queue}
+        with connect() as conn:
+            account_rows = conn.execute("SELECT w.discord_id, w.identity, p.name FROM website_profiles w LEFT JOIN players p ON p.discord_id::text = w.discord_id").fetchall()
+        accounts = []
+        for uid, identity_json, signup_name in account_rows:
+            identity = json.loads(identity_json)
+            accounts.append({"id":str(uid), "name":identity.get("name", "Discord user"),
+                             "signup_completed":signup_name is not None, "signup_name":signup_name})
+        return {"players": sorted(players, key=lambda p:p["name"].casefold()), "queue": queue,
+                "accounts":sorted(accounts, key=lambda a:a["name"].casefold()),
+                "rating_options": [{"value":rating,"label":rating_select_rank_label(rating)} for rating in range(EDIT_RATING_MIN, EDIT_RATING_MAX + 1, EDIT_RATING_STEP)]}
 
 
 def website_queue_status(discord_id):
