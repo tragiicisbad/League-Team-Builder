@@ -7,7 +7,7 @@ from urllib.parse import urlencode, urlsplit
 
 import aiohttp
 from aiohttp import web
-from database import connect
+from database import connect, get_player
 
 ROLES = {"Top", "Jungle", "Mid", "Bot", "Support", "Fill"}
 COOKIE = "__Host-pcl-session"
@@ -18,7 +18,9 @@ def digest(value):
 
 
 class WebsiteAuth:
-    def __init__(self):
+    def __init__(self, sync_roles=None, join_queue=None):
+        self.join_queue = join_queue
+        self.sync_roles = sync_roles
         self.origin = os.getenv("WEBSITE_PUBLIC_URL", "").rstrip("/")
         self.client_id = os.getenv("DISCORD_CLIENT_ID", "")
         self.secret = os.getenv("DISCORD_CLIENT_SECRET", "")
@@ -43,6 +45,7 @@ class WebsiteAuth:
         app.router.add_get("/auth/discord/callback", self.callback)
         app.router.add_get("/api/profile", self.profile)
         app.router.add_post("/api/profile", self.save)
+        app.router.add_post("/api/queue/join", self.queue_join)
         app.router.add_post("/auth/logout", self.logout)
 
     def check_origin(self, req):
@@ -132,6 +135,14 @@ class WebsiteAuth:
         if row:
             payload.update({"discord_id": row[0], "identity": json.loads(row[1]),
                             "preferences": json.loads(row[2]), "riot_linked": False})
+            player = get_player(int(row[0]))
+            payload["signup_completed"] = player is not None
+            if player:
+                payload["preferences"] = {
+                    "name": player["name"], "primary": "Bot" if player["primary_role"] == "ADC" else player["primary_role"],
+                    "secondary": "Bot" if player["secondary_role"] == "ADC" else player["secondary_role"]
+                }
+                payload["player"] = {key: player[key] for key in ("rank", "rating", "wins", "losses")}
         return web.json_response(payload, headers={"Cache-Control": "no-store"})
 
     async def save(self, req):
@@ -147,10 +158,27 @@ class WebsiteAuth:
                 raise ValueError()
         except (ValueError, AttributeError, TypeError):
             raise web.HTTPBadRequest(text="Enter a name and two different roles.")
+        player = get_player(int(row[0]))
+        role_synced = True
+        if player is not None:
+            if self.sync_roles is None:
+                raise web.HTTPServiceUnavailable(text="Discord role syncing is unavailable.")
+            role_synced = await self.sync_roles(int(row[0]), primary, secondary)
         with connect() as conn:
             conn.execute("UPDATE website_profiles SET preferences=%s WHERE discord_id=%s",
                          (json.dumps({"name": name, "primary": primary, "secondary": secondary}), row[0]))
-        return web.json_response({"saved": True}, headers={"Cache-Control": "no-store"})
+        return web.json_response({"saved": True, "discord_role_synced": role_synced},
+                                 headers={"Cache-Control": "no-store"})
+
+    async def queue_join(self, req):
+        self.check_origin(req)
+        row = self.current(req)
+        if not row:
+            raise web.HTTPUnauthorized(text="Sign in with Discord first.")
+        if self.join_queue is None:
+            raise web.HTTPServiceUnavailable(text="Queue joining is unavailable.")
+        result = await self.join_queue(int(row[0]))
+        return web.json_response({"joined": True, "position": result}, headers={"Cache-Control": "no-store"})
 
     async def logout(self, req):
         self.check_origin(req)

@@ -2829,7 +2829,7 @@ async def start_tournament_service():
         last_match_history_channel_id = state.get("history_channel_id")
         last_teams_embed_description = f"Tournament lobby code: `{game['code']}`"
         active_betting_id = state.get("betting_id")
-    tournament_service = riot.TournamentService(resolve_tournament_result, voice=website_voice_channels, activity=lambda: {
+    tournament_service = riot.TournamentService(resolve_tournament_result, sync_roles=website_sync_roles, join_queue=website_join_queue, voice=website_voice_channels, activity=lambda: {
         "queued": len(player_queue), "capacity": MAX_QUEUE_SIZE,
         "waitlist": len(waitlist_queue),
         "state": "In game" if queue_locked else "Ready check" if ready_check else "Queue open" if queue_message_id else "No active queue"
@@ -2907,6 +2907,60 @@ async def restore_queue_snapshot():
         restart_queue_expire_task()
         await update_queue_message()
     queue_snapshot_task = asyncio.create_task(persist_queue_loop())
+
+
+async def website_join_queue(discord_id):
+    from aiohttp import web
+    guild = bot.get_guild(1515283503657259108)
+    if guild is None or not bot.is_ready():
+        raise web.HTTPServiceUnavailable(text="Discord bot is reconnecting.")
+    member = guild.get_member(discord_id)
+    if member is None:
+        try:
+            member = await guild.fetch_member(discord_id)
+        except discord.NotFound:
+            raise web.HTTPForbidden(text="Join the PCL Discord first.")
+        except discord.HTTPException:
+            raise web.HTTPServiceUnavailable(text="Discord is unavailable.")
+    player = get_player(discord_id)
+    if player is None:
+        raise web.HTTPForbidden(text="Complete /signup in Discord first.")
+    if not queue_message_id:
+        raise web.HTTPConflict(text="There is no active queue. Start one in Discord first.")
+    already_joined = discord_id in player_queue or discord_id in waitlist_queue
+    result = add_to_queue_or_waitlist(discord_id, player)
+    if not already_joined:
+        touch_queue_activity()
+    await update_queue_message()
+    return result
+
+
+async def website_sync_roles(discord_id, primary, secondary):
+    from aiohttp import web
+    guild = bot.get_guild(1515283503657259108)
+    if guild is None or not bot.is_ready():
+        raise web.HTTPServiceUnavailable(text="Discord bot is reconnecting.")
+    member = guild.get_member(discord_id)
+    if member is None:
+        try:
+            member = await guild.fetch_member(discord_id)
+        except discord.NotFound:
+            raise web.HTTPForbidden(text="Join the PCL Discord before changing roles.")
+        except discord.HTTPException:
+            raise web.HTTPServiceUnavailable(text="Discord is unavailable.")
+    player = get_player(discord_id)
+    if player is None:
+        raise web.HTTPConflict(text="Complete /signup in Discord first.")
+    primary = "ADC" if primary == "Bot" else primary
+    secondary = "ADC" if secondary == "Bot" else secondary
+    if not update_player_role_preferences_manual(discord_id, primary, secondary, player["avoided_role"]):
+        raise web.HTTPConflict(text="Player signup was not found.")
+    rating = update_overall_rating_from_selected_roles(discord_id)
+    await sync_member_rank_role(member, rating)
+    synced = await sync_member_primary_queue_role(member, primary)
+    refresh_player_in_queues(discord_id)
+    await update_queue_message()
+    return bool(synced)
 
 
 def website_voice_channels():

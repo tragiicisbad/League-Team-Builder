@@ -210,7 +210,9 @@ def verified_winner(match, snapshot):
 
 
 class TournamentService:
-    def __init__(self, resolve, activity=None, voice=None):
+    def __init__(self, resolve, activity=None, voice=None, sync_roles=None, join_queue=None):
+        self.join_queue = join_queue
+        self.sync_roles = sync_roles
         self.resolve = resolve
         self.activity = activity
         self.voice = voice
@@ -274,7 +276,7 @@ class TournamentService:
         if self.runner is not None:
             return
         app = web.Application(client_max_size=16384)
-        auth = WebsiteAuth()
+        auth = WebsiteAuth(sync_roles=self.sync_roles, join_queue=self.join_queue)
         if auth.configured:
             auth.setup()
         auth.routes(app)

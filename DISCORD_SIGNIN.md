@@ -20,7 +20,11 @@ tokens are stored only as hashes in PostgreSQL; cookies are Secure, HttpOnly
 and SameSite=Lax. OAuth states expire after ten minutes and are single-use.
 Website sessions expire after seven days and logout revokes the current session.
 
-Website role preferences are private and separate from bot signup for now.
+Existing /signup players share their primary and secondary roles with the website.
+Website saves update the bot signup, rating, queue entry and primary Discord role.
+Discord changes appear when the website profile is opened again. Player names,
+avoided roles, lane ratings and match history are preserved.
+Players without /signup can save private website preferences only.
 Sign-in does not automatically join the Discord server, grant Verified, complete
 /signup or link a Riot account. Riot linking remains a future step.
 Existing browser-only drafts are not automatically imported.
