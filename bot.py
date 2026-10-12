@@ -1940,6 +1940,7 @@ def stop_queue_expire_task():
 
 
 async def update_queue_message():
+    save_queue_snapshot()
     if ready_check is not None and set(player_queue) != ready_check["players"]:
         old_check = ready_check
         cancel_ready_check()
@@ -2718,6 +2719,7 @@ async def on_ready():
 
     setup_database()
     riot.setup()
+    await restore_queue_snapshot()
     if riot.enabled() or os.getenv("WEBSITE_ENABLED", "false").lower() == "true":
         await start_tournament_service()
 
@@ -2833,6 +2835,78 @@ async def start_tournament_service():
         "state": "In game" if queue_locked else "Ready check" if ready_check else "Queue open" if queue_message_id else "No active queue"
     })
     await tournament_service.start()
+
+
+queue_snapshot_restored = False
+queue_snapshot_task = None
+last_queue_snapshot = None
+
+
+def queue_snapshot():
+    return {
+        "players": player_queue, "waitlist": waitlist_queue,
+        "message_id": queue_message_id, "channel_id": queue_channel_id,
+        "locked": queue_locked,
+        "blue": last_blue_team, "red": last_red_team,
+        "teams_channel": last_teams_channel_id, "teams_message": last_teams_message_id,
+        "started": queue_started_at.isoformat() if queue_started_at else None,
+        "activity": queue_last_activity_at.isoformat() if queue_last_activity_at else None,
+        "expires": queue_expire_at.isoformat() if queue_expire_at else None
+    }
+
+
+def save_queue_snapshot():
+    global last_queue_snapshot
+    if not queue_snapshot_restored:
+        return
+    payload = json.dumps(queue_snapshot(), sort_keys=True)
+    if payload == last_queue_snapshot:
+        return
+    with connect() as conn:
+        conn.execute("INSERT INTO bot_queue_state (id, payload) VALUES (1, %s) "
+                     "ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload", (payload,))
+    last_queue_snapshot = payload
+
+
+async def persist_queue_loop():
+    while True:
+        try:
+            save_queue_snapshot()
+        except Exception as exc:
+            print(f"Queue persistence failed: {exc}")
+        await asyncio.sleep(2)
+
+
+async def restore_queue_snapshot():
+    global queue_snapshot_restored, queue_snapshot_task
+    global player_queue, waitlist_queue, queue_message_id, queue_channel_id
+    global queue_locked, queue_started_at, queue_last_activity_at, queue_expire_at
+    global last_blue_team, last_red_team, last_teams_channel_id, last_teams_message_id
+    if queue_snapshot_restored:
+        return
+    with connect() as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS bot_queue_state "
+                     "(id INTEGER PRIMARY KEY, payload TEXT NOT NULL)")
+        row = conn.execute("SELECT payload FROM bot_queue_state WHERE id = 1").fetchone()
+    if row:
+        state = json.loads(row[0])
+        player_queue = {int(uid): player for uid, player in state["players"].items()}
+        waitlist_queue = {int(uid): player for uid, player in state["waitlist"].items()}
+        queue_message_id = state["message_id"]
+        queue_channel_id = state["channel_id"]
+        queue_locked = state["locked"]
+        last_blue_team = state.get("blue", [])
+        last_red_team = state.get("red", [])
+        last_teams_channel_id = state.get("teams_channel")
+        last_teams_message_id = state.get("teams_message")
+        queue_started_at = datetime.fromisoformat(state["started"]) if state["started"] else None
+        queue_last_activity_at = datetime.fromisoformat(state["activity"]) if state["activity"] else None
+        queue_expire_at = datetime.fromisoformat(state["expires"]) if state["expires"] else None
+    queue_snapshot_restored = True
+    if queue_message_id:
+        restart_queue_expire_task()
+        await update_queue_message()
+    queue_snapshot_task = asyncio.create_task(persist_queue_loop())
 
 
 def website_voice_channels():
