@@ -150,9 +150,11 @@ async function refreshStandings() {
 }
 function route() {
   const hash = location.hash;
+  const moderator = hash === '#moderator';
   const home = !['#leaderboard', '#matches', '#standings'].includes(hash) && !(location.pathname.startsWith('/standings') && !hash);
   const history = historyTab();
-  $('homepage').hidden = !home; $('standings-page').hidden = home;
+  $('homepage').hidden = !home || moderator; $('standings-page').hidden = home || moderator;
+  const modPage = $('moderator-page'); if (modPage) modPage.hidden = !moderator;
   $('home-link').classList.toggle('is-active', home); $('standings-link').classList.toggle('is-active', !home);
   $('home-link').setAttribute('aria-current', home ? 'page' : 'false');
   $('standings-link').setAttribute('aria-current', home ? 'false' : 'page');

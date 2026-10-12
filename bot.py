@@ -2946,6 +2946,12 @@ async def website_moderate(discord_id, body):
                 await clear_5v5_queue_state("Canceled by a website moderator.")
                 await delete_queue_message()
                 await update_queue_message()
+            elif action == "remove":
+                try:
+                    uid = int(body.get("player_id"))
+                except (TypeError, ValueError):
+                    raise web.HTTPBadRequest(text="Invalid player.")
+                await website_leave_queue(uid)
             elif action == "rating":
                 uid = body.get("player_id")
                 ratings = body.get("ratings")
@@ -2975,7 +2981,10 @@ async def website_moderate(discord_id, body):
             player = get_player(uid)
             if player:
                 players.append({"id": str(uid), "name": player["name"], "rating": player["rating"], "rank": rank_for_rating(player["rating"]), "ratings": player["role_ratings"]})
-        return {"players": sorted(players, key=lambda p:p["name"].casefold()), "queue": website_queue_status(discord_id)}
+        queue = website_queue_status(discord_id)
+        queue["players"] = [{"id":str(uid),"name":p["name"],"rank":rank_for_rating(p["rating"]),"ready":bool(ready_check and uid in ready_check["confirmed"])} for uid,p in player_queue.items()]
+        queue["waitlist"] = [{"id":str(uid),"name":p["name"],"rank":rank_for_rating(p["rating"])} for uid,p in waitlist_queue.items()]
+        return {"players": sorted(players, key=lambda p:p["name"].casefold()), "queue": queue}
 
 
 def website_queue_status(discord_id):

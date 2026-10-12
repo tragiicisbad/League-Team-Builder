@@ -4,13 +4,14 @@
   const modButton = document.createElement('button');
   modButton.type = 'button'; modButton.textContent = 'Moderator'; modButton.hidden = true;
   document.getElementById('nav-links').append(modButton);
-  const modDialog = document.createElement('dialog');
-  modDialog.className = 'mod-dashboard';
+  const modDialog = document.createElement('main');
+  modDialog.id = 'moderator-page'; modDialog.hidden = true;
+  modDialog.className = 'mod-dashboard mod-page';
   const make = (tag, text) => {const el = document.createElement(tag); if (text) el.textContent = text; return el;};
   const modHeader = make('div'); modHeader.className = 'profile-heading';
-  const modClose = make('button', 'Close'); modClose.type = 'button';
+  const modClose = make('button', 'Back to home'); modClose.type = 'button';
   modHeader.append(make('h2','Moderator dashboard'), modClose);
-  modClose.addEventListener('click',()=>modDialog.close());
+  modClose.addEventListener('click',()=>{location.hash = 'home';});
   const modStatus = make('p'); modStatus.setAttribute('role','status');
   const durationLabel = make('label','Queue duration (minutes)'); durationLabel.className = 'profile-field';
   const duration = make('input'); duration.type = 'number'; duration.min = '1'; duration.max = '1440'; duration.value = '60'; durationLabel.append(duration);
@@ -29,10 +30,32 @@
   });
   const saveRatings = make('button','Save ratings'); saveRatings.type = 'submit'; saveRatings.className = 'button button--primary';
   ratingForm.append(ratingFields, saveRatings);
-  modDialog.append(modHeader, modStatus, durationLabel, modActions, searchLabel, playerLabel, ratingForm);
-  document.body.append(modDialog);
+  const queueSection = make('section');
+  queueSection.append(make('h3','Active queue'), durationLabel, modActions);
+  const modQueueList = make('div'); queueSection.append(modQueueList);
+  const playerSection = make('section');
+  playerSection.append(make('h3','Signup player ratings'), searchLabel, playerLabel, ratingForm);
+  const modLayout = make('div'); modLayout.className = 'mod-layout'; modLayout.append(queueSection, playerSection);
+  modDialog.append(modHeader, modStatus, modLayout);
+  document.getElementById('homepage').before(modDialog);
   let modData = null;
   let modBusy = false;
+  function renderModQueue() {
+    modQueueList.replaceChildren();
+    const queue = modData?.queue;
+    if (!queue) return;
+    [['players','Queued players'],['waitlist','Waitlist']].forEach(([key,title])=>{
+      modQueueList.append(make('h4',title + ' (' + queue[key].length + ')'));
+      queue[key].forEach(player=>{
+        const row = make('div'); row.className = 'mod-queue-row';
+        row.append(make('span',player.name + ' / ' + player.rank + (queue.deadline && key === 'players' ? player.ready ? ' / Ready' : ' / Waiting' : '')));
+        const remove = make('button','Remove'); remove.type = 'button'; remove.className = 'button';
+        remove.disabled = key === 'players' && queue.locked;
+        remove.addEventListener('click',()=>{if (confirm('Remove ' + player.name + ' from the queue?')) modRequest({action:'remove',player_id:player.id});});
+        row.append(remove); modQueueList.append(row);
+      });
+    });
+  }
   function showPlayer() {
     const player = modData?.players.find(p=>p.id === playerSelect.value);
     Object.entries(inputs).forEach(([role,input])=>{input.value = player?.ratings[role] ?? ''; input.disabled = !player;});
@@ -55,11 +78,11 @@
     try {
       const response = await fetch('/api/mod', body ? {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(20000)} : {cache:'no-store',signal:AbortSignal.timeout(20000)});
       if (!response.ok) throw Error(await response.text());
-      modData = await response.json(); filterPlayers();
+      modData = await response.json(); filterPlayers(); renderModQueue();
       modStatus.textContent = (body ? 'Saved. ' : '') + (modData.queue.locked ? 'Game in progress.' : modData.queue.active ? 'Queue active.' : 'No active queue.');
       modButton.hidden = false;
       if (body) await refreshQueue();
-    } catch(error) {modStatus.textContent = error.message || 'Dashboard unavailable.';}
+    } catch(error) {modStatus.textContent = error.message || 'Dashboard unavailable.'; if (!body) {modData = null; modButton.hidden = true; modLayout.hidden = true;}}
     finally {modBusy = false; modActions.querySelectorAll('button').forEach(b=>b.disabled = false); showPlayer();}
   }
   [['start','Start queue'],['timer','Update timer'],['cancel','Cancel queue']].forEach(([action,title])=>{
@@ -74,7 +97,18 @@
     if (!playerSelect.value || modBusy) return;
     modRequest({action:'rating',player_id:playerSelect.value,ratings:Object.fromEntries(Object.entries(inputs).map(([role,input])=>[role,Number(input.value)]))});
   });
-  modButton.addEventListener('click',()=>{modDialog.showModal();modRequest();});
+  function routeModerator() {
+    modDialog.hidden = location.hash !== '#moderator';
+    if (!modDialog.hidden) {
+      get('homepage').hidden = true; get('standings-page').hidden = true;
+      modLayout.hidden = !modData;
+      if (account?.authenticated) modRequest().then(()=>{modLayout.hidden = !modData;});
+      else modStatus.textContent = 'Sign in with your moderator Discord account to access this page.';
+    }
+  }
+  modButton.addEventListener('click',()=>{location.hash = 'moderator';});
+  window.addEventListener('hashchange',routeModerator);
+  setInterval(()=>{if (!modDialog.hidden && modData && !modDialog.contains(document.activeElement)) modRequest();},15000);
   const avoidedField = document.createElement('label');
   avoidedField.className = 'profile-field';
   avoidedField.textContent = 'Avoided role (optional)';
@@ -260,7 +294,8 @@
     display();
     await refreshStatus();
     if (account?.authenticated && !modData) await modRequest();
-    if (!account?.authenticated) {modData = null; modButton.hidden = true; if (modDialog.open) modDialog.close();}
+    if (!account?.authenticated) {modData = null; modButton.hidden = true; modLayout.hidden = true;}
+    routeModerator();
   }
   authLink.addEventListener('click', event => {if (!account?.login_available) {event.preventDefault();get('profile-feedback').textContent = 'Discord sign-in needs to be configured on the server.';}});
   async function open(role) {
