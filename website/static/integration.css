@@ -27,3 +27,11 @@ button:disabled,input:disabled,select:disabled{opacity:.55;cursor:not-allowed}
 @media(max-width:1100px){.hero-copy h1{font-size:64px}.section-heading h2{font-size:40px}.standings-title h1{font-size:60px}}
 @media(max-width:700px){.hero-copy h1{font-size:44px}.section-heading h2{font-size:32px}.standings-title h1{font-size:44px}.hero{padding-top:8rem}.discord-panel{height:380px;min-height:380px}.roles-row{grid-template-columns:repeat(2,minmax(0,1fr))}.coming-card{grid-template-columns:1fr}.coming-card .button{justify-self:start}.live-teams{grid-template-columns:1fr}.panel-grid{max-width:none}.hero-copy{width:100%}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
+ .queue-panel .panel-foot { flex-wrap: wrap; gap: 8px; }
+ .queue-personal-status { margin: 0; padding: 12px 20px; font-size: 14px; color: #a8dfe7; }
+ .queue-user.is-current-player { background: #18383b; box-shadow: inset 3px 0 #62dae8; }
+ .queue-ready-dialog { color: #eaf6f7; background: #151d22; border: 1px solid #45616a; border-radius: 8px; padding: 28px; width: min(480px, calc(100% - 32px)); }
+ .queue-ready-dialog::backdrop { background: rgba(0,0,0,.75); }
+ .queue-ready-dialog h2 { font-size: 28px; margin: 0 0 16px; }
+ .queue-ready-dialog p { margin: 0 0 20px; line-height: 1.6; }
+ .queue-ready-dialog button { margin-right: 8px; }

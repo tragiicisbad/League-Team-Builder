@@ -18,7 +18,10 @@ def digest(value):
 
 
 class WebsiteAuth:
-    def __init__(self, sync_roles=None, join_queue=None):
+    def __init__(self, sync_roles=None, join_queue=None, leave_queue=None, queue_status=None, ready_queue=None):
+        self.queue_status = queue_status
+        self.ready_queue = ready_queue
+        self.leave_queue = leave_queue
         self.join_queue = join_queue
         self.sync_roles = sync_roles
         self.origin = os.getenv("WEBSITE_PUBLIC_URL", "").rstrip("/")
@@ -46,6 +49,9 @@ class WebsiteAuth:
         app.router.add_get("/api/profile", self.profile)
         app.router.add_post("/api/profile", self.save)
         app.router.add_post("/api/queue/join", self.queue_join)
+        app.router.add_post("/api/queue/leave", self.queue_leave)
+        app.router.add_get("/api/queue/me", self.queue_me)
+        app.router.add_post("/api/queue/ready", self.queue_ready)
         app.router.add_post("/auth/logout", self.logout)
 
     def check_origin(self, req):
@@ -179,6 +185,34 @@ class WebsiteAuth:
             raise web.HTTPServiceUnavailable(text="Queue joining is unavailable.")
         result = await self.join_queue(int(row[0]))
         return web.json_response({"joined": True, "position": result}, headers={"Cache-Control": "no-store"})
+
+    async def queue_leave(self, req):
+        self.check_origin(req)
+        row = self.current(req)
+        if not row:
+            raise web.HTTPUnauthorized(text="Sign in with Discord first.")
+        if self.leave_queue is None:
+            raise web.HTTPServiceUnavailable(text="Queue leaving is unavailable.")
+        await self.leave_queue(int(row[0]))
+        return web.json_response({"left": True}, headers={"Cache-Control": "no-store"})
+
+    async def queue_me(self, req):
+        row = self.current(req)
+        if not row:
+            raise web.HTTPUnauthorized(text="Sign in with Discord first.")
+        if self.queue_status is None:
+            raise web.HTTPServiceUnavailable()
+        return web.json_response(self.queue_status(int(row[0])), headers={"Cache-Control":"no-store"})
+
+    async def queue_ready(self, req):
+        self.check_origin(req)
+        row = self.current(req)
+        if not row:
+            raise web.HTTPUnauthorized()
+        if self.ready_queue is None:
+            raise web.HTTPServiceUnavailable()
+        await self.ready_queue(int(row[0]))
+        return web.json_response({"ready":True}, headers={"Cache-Control":"no-store"})
 
     async def logout(self, req):
         self.check_origin(req)

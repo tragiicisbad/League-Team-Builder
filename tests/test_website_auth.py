@@ -97,3 +97,36 @@ class AuthTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(web.HTTPUnauthorized):
                 await auth.queue_join(req)
         join.assert_not_awaited()
+
+    async def test_queue_leave_uses_authenticated_identity(self):
+        leave = AsyncMock()
+        auth = WebsiteAuth(leave_queue=leave)
+        auth.origin = "https://pcl.example"
+        req = SimpleNamespace(headers={"Origin":auth.origin})
+        with patch.object(auth, "current", return_value=("42", "{}", "{}")):
+            response = await auth.queue_leave(req)
+        leave.assert_awaited_once_with(42)
+        self.assertEqual(response.status, 200)
+
+    async def test_queue_leave_rejects_cross_origin(self):
+        leave = AsyncMock()
+        auth = WebsiteAuth(leave_queue=leave)
+        auth.origin = "https://pcl.example"
+        with self.assertRaises(web.HTTPForbidden):
+            await auth.queue_leave(SimpleNamespace(headers={"Origin":"https://other.example"}))
+        leave.assert_not_awaited()
+
+    async def test_ready_check_uses_verified_identity(self):
+        ready = AsyncMock()
+        auth = WebsiteAuth(ready_queue=ready)
+        auth.origin = "https://pcl.example"
+        with patch.object(auth, "current", return_value=("42", "{}", "{}")):
+            response = await auth.queue_ready(SimpleNamespace(headers={"Origin":auth.origin}))
+        ready.assert_awaited_once_with(42)
+        self.assertEqual(response.status, 200)
+
+    async def test_queue_status_requires_login(self):
+        auth = WebsiteAuth(queue_status=lambda uid: {})
+        with patch.object(auth, "current", return_value=None):
+            with self.assertRaises(web.HTTPUnauthorized):
+                await auth.queue_me(None)

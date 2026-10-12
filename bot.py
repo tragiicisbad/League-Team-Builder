@@ -1986,6 +1986,7 @@ def ready_check_embed(check, title="Ready Check"):
         title=title,
         description=(
             "React with " + JOIN_EMOJI + " when you are ready to play.\n"
+            "All 10 players must confirm within 5 minutes or the queue is canceled.\n"
             f"Deadline: <t:{check['deadline']}:R>\n\n" +
             "\n".join(
                 f"{'Ready' if uid in check['confirmed'] else 'Waiting'}: <@{uid}>"
@@ -2037,23 +2038,15 @@ async def finish_ready_check(check, channel):
             ready_check = None
             return
         ready_check = None
-        for uid in missing:
-            player_queue.pop(uid, None)
-        refill_active_queue_from_waitlist()
-        touch_queue_activity()
-        await check["message"].edit(embed=ready_check_embed(check, "Ready Check Expired"))
+        await check["message"].edit(embed=ready_check_embed(check, "Ready Check Failed - Queue Canceled"))
+        await clear_5v5_queue_state("Ready check failed.")
+        await delete_queue_message()
         await channel.send(
-            "Ready check expired. Players who did not confirm were removed. "
-            "Waitlisted players have been promoted where possible."
+            embed=discord.Embed(title="Queue Canceled",
+                description="Not all 10 players confirmed within 5 minutes. The queue and waitlist have been cleared. Anyone can start a new queue.",
+                color=COLOR_WARNING),
+            view=QueueRestartView()
         )
-        # Remove stale queue reactions so removed players can join again.
-        if queue_message_id:
-            try:
-                queue_msg = await channel.fetch_message(queue_message_id)
-                for uid in missing:
-                    await queue_msg.remove_reaction(JOIN_EMOJI, discord.Object(id=uid))
-            except discord.HTTPException:
-                pass
         await update_queue_message()
     except asyncio.CancelledError:
         return
@@ -2829,7 +2822,7 @@ async def start_tournament_service():
         last_match_history_channel_id = state.get("history_channel_id")
         last_teams_embed_description = f"Tournament lobby code: `{game['code']}`"
         active_betting_id = state.get("betting_id")
-    tournament_service = riot.TournamentService(resolve_tournament_result, sync_roles=website_sync_roles, join_queue=website_join_queue, voice=website_voice_channels, activity=lambda: {
+    tournament_service = riot.TournamentService(resolve_tournament_result, sync_roles=website_sync_roles, join_queue=website_join_queue, leave_queue=website_leave_queue, queue_status=website_queue_status, ready_queue=website_queue_ready, voice=website_voice_channels, activity=lambda: {
         "queued": len(player_queue), "capacity": MAX_QUEUE_SIZE,
         "waitlist": len(waitlist_queue),
         "state": "In game" if queue_locked else "Ready check" if ready_check else "Queue open" if queue_message_id else "No active queue"
@@ -2907,6 +2900,57 @@ async def restore_queue_snapshot():
         restart_queue_expire_task()
         await update_queue_message()
     queue_snapshot_task = asyncio.create_task(persist_queue_loop())
+
+
+def website_queue_status(discord_id):
+    from aiohttp import web
+    if not bot.is_ready():
+        raise web.HTTPServiceUnavailable()
+    expiry = queue_expiration_timestamp()
+    waiting = list(waitlist_queue)
+    return {"signed_up": get_player(discord_id) is not None,
+            "active": bool(queue_message_id), "locked": queue_locked,
+            "queued": discord_id in player_queue,
+            "waitlist_position": waiting.index(discord_id) + 1 if discord_id in waiting else None,
+            "player_index": list(player_queue).index(discord_id) if discord_id in player_queue else None,
+            "expires": expiry.timestamp() if expiry and not queue_locked else None,
+            "ready_check": bool(ready_check and discord_id in ready_check["players"]),
+            "confirmed": bool(ready_check and discord_id in ready_check["confirmed"]),
+            "deadline": ready_check["deadline"] if ready_check else None}
+
+
+async def website_queue_ready(discord_id):
+    from aiohttp import web
+    check = ready_check
+    if not bot.is_ready():
+        raise web.HTTPServiceUnavailable()
+    if not check or discord_id not in check["players"] or datetime.now().timestamp() >= check["deadline"]:
+        raise web.HTTPConflict(text="There is no active ready check for you.")
+    check["confirmed"].add(discord_id)
+    if check["message"]:
+        await check["message"].edit(embed=ready_check_embed(check))
+    if check["confirmed"] == check["players"]:
+        check["event"].set()
+
+
+async def website_leave_queue(discord_id):
+    from aiohttp import web
+    if not bot.is_ready():
+        raise web.HTTPServiceUnavailable(text="Discord bot is reconnecting.")
+    if discord_id in player_queue and queue_locked:
+        raise web.HTTPConflict(text="The game has started. You cannot leave this lineup.")
+    changed = False
+    if discord_id in player_queue:
+        del player_queue[discord_id]
+        cancel_ready_check()
+        promote_next_waitlisted_player()
+        changed = True
+    if discord_id in waitlist_queue:
+        del waitlist_queue[discord_id]
+        changed = True
+    if changed:
+        touch_queue_activity()
+    await update_queue_message()
 
 
 async def website_join_queue(discord_id):
