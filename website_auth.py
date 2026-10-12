@@ -171,12 +171,9 @@ class WebsiteAuth:
                 raise ValueError()
         except (ValueError, AttributeError, TypeError):
             raise web.HTTPBadRequest(text="Enter a name and two different roles.")
-        player = get_player(int(row[0]))
-        role_synced = True
-        if player is not None:
-            if self.sync_roles is None:
-                raise web.HTTPServiceUnavailable(text="Discord role syncing is unavailable.")
-            role_synced = await self.sync_roles(int(row[0]), primary, secondary, avoided)
+        if self.sync_roles is None:
+            raise web.HTTPServiceUnavailable(text="Discord signup syncing is unavailable.")
+        role_synced = await self.sync_roles(int(row[0]), primary, secondary, avoided)
         with connect() as conn:
             conn.execute("UPDATE website_profiles SET preferences=%s WHERE discord_id=%s",
                          (json.dumps({"name": name, "primary": primary, "secondary": secondary, "avoided": avoided}), row[0]))

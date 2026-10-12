@@ -327,7 +327,7 @@
   function display() {
     const signedIn = !!account?.authenticated;
     const synced = !!account?.signup_completed;
-    note.textContent = synced ? 'Synced with Discord. Role changes here update your signup and primary Discord role.' : signedIn ? 'Signed in with Discord. Complete /signup in Discord to join the league.' : 'Sign in with Discord to create your PCL website profile.';
+    note.textContent = synced ? 'Synced with Discord. Role changes here update your signup and primary Discord role.' : signedIn ? 'Choose your roles and save to complete your PCL signup.' : 'Sign in with Discord to create your PCL website profile.';
     authLink.hidden = signedIn;
     authLink.textContent = account?.login_available ? 'Sign in with Discord' : 'Discord sign-in awaiting setup';
     authLink.setAttribute('aria-disabled', String(!account?.login_available));
@@ -402,7 +402,7 @@
       await load();
       get('profile-feedback').textContent = result.discord_role_synced === false
         ? 'Roles saved, but Discord role assignment failed. Ask staff to check bot permissions.'
-        : account?.signup_completed ? 'Roles saved and synced to Discord.' : 'Profile saved. Complete /signup in Discord to join games.';
+        : 'Signup saved and synced to Discord.';
       if (result.discord_role_synced !== false) get('profile-dialog').close();
     } catch {get('profile-feedback').textContent = 'Could not save. Please sign in again and retry.';}
   });

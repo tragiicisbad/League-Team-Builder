@@ -3078,12 +3078,14 @@ async def website_sync_roles(discord_id, primary, secondary, avoided="None"):
         except discord.HTTPException:
             raise web.HTTPServiceUnavailable(text="Discord is unavailable.")
     player = get_player(discord_id)
-    if player is None:
-        raise web.HTTPConflict(text="Complete /signup in Discord first.")
     primary = "ADC" if primary == "Bot" else primary
     secondary = "ADC" if secondary == "Bot" else secondary
     avoided = "ADC" if avoided == "Bot" else avoided
-    if not update_player_role_preferences_manual(discord_id, primary, secondary, avoided):
+    if player is None:
+        save_player(discord_id=discord_id, name=member.display_name, rank="Iron IV",
+                    rating=RANK_RATINGS["Iron IV"], primary_role=primary,
+                    secondary_role=secondary, avoided_role=avoided)
+    elif not update_player_role_preferences_manual(discord_id, primary, secondary, avoided):
         raise web.HTTPConflict(text="Player signup was not found.")
     rating = update_overall_rating_from_selected_roles(discord_id)
     await sync_member_rank_role(member, rating)

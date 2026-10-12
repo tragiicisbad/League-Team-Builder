@@ -24,9 +24,11 @@ Existing /signup players share their primary and secondary roles with the websit
 Website saves update the bot signup, rating, queue entry and primary Discord role.
 Discord changes appear when the website profile is opened again. Player names,
 avoided roles, lane ratings and match history are preserved.
-Players without /signup can save private website preferences only.
-Sign-in does not automatically join the Discord server, grant Verified, complete
-/signup or link a Riot account. Riot linking remains a future step.
+Saving roles on the website creates the same signup record as /signup for new
+players already in the PCL Discord, using their Discord display name and the
+same Iron IV starting ratings. Sign-in alone does not complete signup.
+It does not automatically join the Discord server, grant Verified or link a
+Riot account. Riot linking remains a future step.
 Existing browser-only drafts are not automatically imported.
 
 Local static previews cannot perform sign-in. Use the HTTPS Railway service.

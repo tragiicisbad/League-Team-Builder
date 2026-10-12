@@ -78,6 +78,17 @@ class AuthTests(unittest.IsolatedAsyncioTestCase):
                 await auth.save(req)
         sync.assert_not_awaited()
 
+    async def test_new_website_signup_syncs_without_existing_player(self):
+        sync = AsyncMock(return_value=True)
+        auth = WebsiteAuth(sync_roles=sync)
+        auth.origin = "https://pcl.example"
+        req = SimpleNamespace(headers={"Origin":auth.origin},json=AsyncMock(return_value={
+            "name":"New player","primary":"Mid","secondary":"Top","avoided":"Bot"}))
+        with patch.object(auth,"current",return_value=("42","{}","{}")), patch("website_auth.get_player",return_value=None), patch("website_auth.connect"):
+            response = await auth.save(req)
+        self.assertEqual(response.status,200)
+        sync.assert_awaited_once_with(42,"Mid","Top","Bot")
+
     async def test_queue_join_uses_authenticated_identity(self):
         join = AsyncMock(return_value="active")
         auth = WebsiteAuth(join_queue=join)
