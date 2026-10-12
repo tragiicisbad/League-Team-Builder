@@ -1,6 +1,18 @@
 (() => {
   const get = id => document.getElementById(id);
   let account = null;
+  const avoidedField = document.createElement('label');
+  avoidedField.className = 'profile-field';
+  avoidedField.textContent = 'Avoided role (optional)';
+  const avoidedSelect = document.createElement('select');
+  avoidedSelect.id = 'profile-avoided';
+  ['None','Top','Jungle','Mid','Bot','Support'].forEach(role => {
+    const option = document.createElement('option');
+    option.value = role; option.textContent = role;
+    avoidedSelect.append(option);
+  });
+  avoidedField.append(avoidedSelect);
+  document.querySelector('.profile-role-fields').after(avoidedField);
   let queueState = null;
   let statusBusy = false;
   let actionBusy = false;
@@ -148,7 +160,7 @@
     authLink.hidden = signedIn;
     authLink.textContent = account?.login_available ? 'Sign in with Discord' : 'Discord sign-in awaiting setup';
     authLink.setAttribute('aria-disabled', String(!account?.login_available));
-    ['profile-primary','profile-secondary'].forEach(id => {get(id).disabled = !signedIn;});
+    ['profile-primary','profile-secondary','profile-avoided'].forEach(id => {get(id).disabled = !signedIn;});
     get('profile-name').disabled = !signedIn || synced;
     get('profile-reset').disabled = !signedIn;
     get('profile-form').querySelector('[type="submit"]').disabled = !signedIn;
@@ -158,6 +170,7 @@
     get('profile-name').value = saved.name || account?.identity?.name || '';
     get('profile-primary').value = saved.primary || '';
     get('profile-secondary').value = saved.secondary || '';
+    get('profile-avoided').value = saved.avoided || 'None';
     get('saved-role-summary').textContent = signedIn
       ? (saved.primary ? 'Primary: ' + saved.primary + ' / Secondary: ' + saved.secondary + (account.player ? ' / ' + account.player.rank + ' / ' + account.player.rating + ' MMR' : '') : 'Choose your roles in My profile.')
       : 'Sign in with Discord to save your role preferences.';
@@ -184,7 +197,7 @@
   get('profile-close').addEventListener('click', () => get('profile-dialog').close());
   get('profile-form').addEventListener('submit', async event => {
     event.preventDefault();
-    const preferences = {name:get('profile-name').value.trim(), primary:get('profile-primary').value, secondary:get('profile-secondary').value};
+    const preferences = {name:get('profile-name').value.trim(), primary:get('profile-primary').value, secondary:get('profile-secondary').value, avoided:get('profile-avoided').value};
     if (!preferences.name || preferences.primary === preferences.secondary) {get('profile-feedback').textContent = 'Enter a name and choose different primary and secondary roles.';return;}
     try {
       const response = await fetch('/api/profile', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(preferences)});

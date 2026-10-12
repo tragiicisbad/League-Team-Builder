@@ -146,7 +146,8 @@ class WebsiteAuth:
             if player:
                 payload["preferences"] = {
                     "name": player["name"], "primary": "Bot" if player["primary_role"] == "ADC" else player["primary_role"],
-                    "secondary": "Bot" if player["secondary_role"] == "ADC" else player["secondary_role"]
+                    "secondary": "Bot" if player["secondary_role"] == "ADC" else player["secondary_role"],
+                    "avoided": "Bot" if player.get("avoided_role") == "ADC" else player.get("avoided_role", "None")
                 }
                 payload["player"] = {key: player[key] for key in ("rank", "rating", "wins", "losses")}
         return web.json_response(payload, headers={"Cache-Control": "no-store"})
@@ -160,6 +161,9 @@ class WebsiteAuth:
             body = await req.json()
             name = body.get("name", "").strip()
             primary, secondary = body.get("primary"), body.get("secondary")
+            avoided = body.get("avoided", "None")
+            if avoided not in {"None", "Top", "Jungle", "Mid", "Bot", "Support"}:
+                raise ValueError()
             if not name or len(name) > 40 or primary not in ROLES or secondary not in ROLES or primary == secondary:
                 raise ValueError()
         except (ValueError, AttributeError, TypeError):
@@ -169,10 +173,10 @@ class WebsiteAuth:
         if player is not None:
             if self.sync_roles is None:
                 raise web.HTTPServiceUnavailable(text="Discord role syncing is unavailable.")
-            role_synced = await self.sync_roles(int(row[0]), primary, secondary)
+            role_synced = await self.sync_roles(int(row[0]), primary, secondary, avoided)
         with connect() as conn:
             conn.execute("UPDATE website_profiles SET preferences=%s WHERE discord_id=%s",
-                         (json.dumps({"name": name, "primary": primary, "secondary": secondary}), row[0]))
+                         (json.dumps({"name": name, "primary": primary, "secondary": secondary, "avoided": avoided}), row[0]))
         return web.json_response({"saved": True, "discord_role_synced": role_synced},
                                  headers={"Cache-Control": "no-store"})
 

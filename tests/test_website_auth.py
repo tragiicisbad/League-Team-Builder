@@ -65,7 +65,7 @@ class AuthTests(unittest.IsolatedAsyncioTestCase):
             response = await auth.save(req)
             self.assertEqual(response.status, 200)
             db.assert_called_once()
-        sync.assert_awaited_once_with(42, "Bot", "Support")
+        sync.assert_awaited_once_with(42, "Bot", "Support", "None")
 
     async def test_invalid_roles_do_not_sync(self):
         sync = AsyncMock()

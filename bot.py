@@ -2979,7 +2979,7 @@ async def website_join_queue(discord_id):
     return result
 
 
-async def website_sync_roles(discord_id, primary, secondary):
+async def website_sync_roles(discord_id, primary, secondary, avoided="None"):
     from aiohttp import web
     guild = bot.get_guild(1515283503657259108)
     if guild is None or not bot.is_ready():
@@ -2997,7 +2997,8 @@ async def website_sync_roles(discord_id, primary, secondary):
         raise web.HTTPConflict(text="Complete /signup in Discord first.")
     primary = "ADC" if primary == "Bot" else primary
     secondary = "ADC" if secondary == "Bot" else secondary
-    if not update_player_role_preferences_manual(discord_id, primary, secondary, player["avoided_role"]):
+    avoided = "ADC" if avoided == "Bot" else avoided
+    if not update_player_role_preferences_manual(discord_id, primary, secondary, avoided):
         raise web.HTTPConflict(text="Player signup was not found.")
     rating = update_overall_rating_from_selected_roles(discord_id)
     await sync_member_rank_role(member, rating)
