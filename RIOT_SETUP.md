@@ -1,5 +1,16 @@
 # Riot automatic results and website
 
+## Current review configuration
+
+Coins and wagering are disabled in the Discord bot. Coin commands are removed,
+games no longer award coins, and no new betting windows or payouts are created.
+Historical records remain stored for recovery and audit purposes.
+
+The public standings endpoint returns empty lists without querying player or
+match data. Homepage activity statistics are hidden and the standings views show
+coming-soon notices. Public statistics must stay paused until sharing consent is
+explicitly established. The earlier website behavior below is not currently live.
+
 The bot now supports NA tournament-code games. Ordinary custom lobbies created
 without the bot's tournament code are still recorded manually with `!result`.
 

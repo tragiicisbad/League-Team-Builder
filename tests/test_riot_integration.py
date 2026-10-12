@@ -58,6 +58,12 @@ class WinnerTests(unittest.TestCase):
 
 
 class ServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_paused_public_endpoint_never_reads_stats(self):
+        import json
+        with patch.object(riot, "public_data") as public_data:
+            response = await riot.TournamentService(None).standings(None)
+        public_data.assert_not_called()
+        self.assertEqual(json.loads(response.text), {"leaderboard": [], "matches": [], "stats_hidden": True})
     async def test_callback_cannot_supply_its_own_winner(self):
         game = {"code": "code", "token": "secret"}
         req = AsyncMock()

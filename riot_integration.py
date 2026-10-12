@@ -299,10 +299,6 @@ class TournamentService:
         return web.Response(text=path.read_text(encoding="utf-8").strip(), content_type="text/plain")
 
     async def standings(self, req):
-        try:
-            data = await asyncio.to_thread(public_data)
-        except Exception:
-            raise web.HTTPServiceUnavailable(text="Standings temporarily unavailable")
-        if self.activity:
-            data["activity"] = self.activity()
-        return web.json_response(data, headers={"Cache-Control": "no-store"})
+        # Public season data is paused until explicit sharing consent is established.
+        return web.json_response({"leaderboard": [], "matches": [], "stats_hidden": True},
+                                 headers={"Cache-Control": "no-store"})

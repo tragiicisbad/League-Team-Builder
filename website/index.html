@@ -139,6 +139,17 @@
     function emptyState(container,title,description){container.replaceChildren();const image=document.createElement('img');image.src='/pcl-logo.png';image.alt='';container.append(image,element('strong',title),element('span',description))}
     function moveIndicator(){const active=document.querySelector('nav button[aria-selected="true"]');$('tab-indicator').style.width=`${active.offsetWidth}px`;$('tab-indicator').style.transform=`translateX(${active.offsetLeft}px)`}
     function render(){
+      $('community-activity').hidden=true;
+      document.querySelector('.summary').hidden=true;
+      if(data.stats_hidden){
+        $('rows').replaceChildren();
+        document.querySelector('#leaders .scroll').hidden=true;
+        $('filters').hidden=true;
+        $('no-players').hidden=false;
+        emptyState($('no-players'),'Standings coming soon','Public player statistics are paused while we prepare account linking and sharing preferences.');
+        const notice=element('div','','empty');emptyState(notice,'Match history coming soon','Public match records are currently paused. Games continue in Discord.');$('matches').replaceChildren(notice);
+        return;
+      }
       $('home-players').textContent=data.leaderboard.length;
       const activity=data.activity;
       $('home-queue').textContent=activity?`${activity.queued} / ${activity.capacity}`:'--';
@@ -181,7 +192,7 @@
     $('role-filter').onchange=render;
     function route(){const hash=location.hash;const home=!['#leaderboard','#matches'].includes(hash);$('homepage').hidden=!home;$('standings-page').hidden=home;$('home-link').setAttribute('aria-current',home?'page':'false');$('standings-link').setAttribute('aria-current',home?'false':'page');if(!home)show(hash==='#matches');window.scrollTo({top:0,behavior:'instant'})}
     $('leader-tab').onclick=()=>{location.hash='leaderboard';show(false)};$('matches-tab').onclick=()=>{location.hash='matches';show(true)};
-    function homeSections(){const home=$('standings-page').hidden;$('community-activity').hidden=!home;$('getting-started').hidden=!home}
+    function homeSections(){const home=$('standings-page').hidden;$('community-activity').hidden=true;$('getting-started').hidden=!home;if(data.stats_hidden)$('filters').hidden=true}
     window.addEventListener('hashchange',()=>{route();homeSections()});route();homeSections();
     if('IntersectionObserver' in window){const observer=new IntersectionObserver(entries=>{entries.forEach(entry=>{if(entry.isIntersecting){entry.target.classList.add('revealed');observer.unobserve(entry.target)}})},{threshold:.12});document.querySelectorAll('.home-about h2,.home-details article,.home-end').forEach(node=>{node.classList.add('scroll-reveal');observer.observe(node)})}
     window.addEventListener('resize',moveIndicator);document.fonts.ready.then(moveIndicator);moveIndicator();

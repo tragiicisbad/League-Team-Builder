@@ -65,6 +65,7 @@ MATCH_HISTORY_CHANNEL_NAME = "match-history"
 WINRATE_CHANNEL_NAME = "winrates"
 BETTING_WINDOW_SECONDS = 180
 MIN_BET_AMOUNT = 1000
+COINS_ENABLED = False
 TRIGGER_GIFS = {
     "good bot": "https://klipy.com/gifs/good-boy-good-boi",
     "bot dont lie": "https://tenor.com/view/patrick-patrick-star-jolly-happy-rainbow-and-sunshine-gif-11154688262827409004"
@@ -1386,7 +1387,7 @@ def build_teams_embed(title="Balanced Teams Generated", description=None):
 
     betting_id = globals().get("active_betting_id")
 
-    if betting_id is not None:
+    if COINS_ENABLED and betting_id is not None:
         betting_match = get_betting_match(betting_id)
 
         if betting_match:
@@ -2215,6 +2216,8 @@ async def close_betting_after_delay(betting_id, delay_seconds):
 
 
 async def open_betting_for_current_match(guild=None):
+    if not COINS_ENABLED:
+        return None
     """
     Creates the database betting match and attaches Bet Blue/Red buttons to the teams embed.
     """
@@ -2263,6 +2266,8 @@ async def refund_active_betting(reason="Betting refunded."):
 
 
 async def settle_active_betting(winner):
+    if not COINS_ENABLED:
+        return None
     """
     Closes any open betting window, pays winners, and refreshes the teams message.
     """
@@ -2306,6 +2311,9 @@ class BetAmountModal(discord.ui.Modal):
         self.add_item(self.amount)
 
     async def on_submit(self, interaction: discord.Interaction):
+        if not COINS_ENABLED:
+            await interaction.response.send_message("Coins and wagering have been removed.", ephemeral=True)
+            return
         betting_match = get_betting_match(self.betting_id)
 
         if not betting_match:
@@ -2386,10 +2394,16 @@ class BettingView(discord.ui.View):
 
     @discord.ui.button(label="Bet Blue", style=discord.ButtonStyle.primary, emoji="🔵")
     async def bet_blue(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not COINS_ENABLED:
+            await interaction.response.send_message("Wagering has been removed.", ephemeral=True)
+            return
         await interaction.response.send_modal(BetAmountModal(self.betting_id, "blue"))
 
     @discord.ui.button(label="Bet Red", style=discord.ButtonStyle.danger, emoji="🔴")
     async def bet_red(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not COINS_ENABLED:
+            await interaction.response.send_message("Wagering has been removed.", ephemeral=True)
+            return
         await interaction.response.send_modal(BetAmountModal(self.betting_id, "red"))
 
 
@@ -4979,7 +4993,7 @@ async def record_result(ctx, winner: str):
     betting_result = await settle_active_betting(winner)
 
     played_ids = [player["discord_id"] for player in last_blue_team + last_red_team]
-    coin_rewards = award_match_coin_rewards(played_ids)
+    coin_rewards = []
 
     if last_result_rollback is not None:
         last_result_rollback["coin_rewards"] = coin_rewards
@@ -5024,17 +5038,6 @@ async def record_result(ctx, winner: str):
             ),
             inline=False
         )
-
-    signed_count = len(coin_rewards) - len(played_ids)
-    embed.add_field(
-        name="Coin Rewards",
-        value=(
-            f"Players in match: **+30,000** coins each\n"
-            f"Other signed-up players: **+1,000** coins each\n"
-            f"Rewarded: **{len(played_ids)}** players + **{signed_count}** signed-up players"
-        ),
-        inline=False
-    )
 
     if promoted_players:
         promotion_lines = []
@@ -5787,5 +5790,8 @@ async def history(ctx):
 async def ping(ctx):
     await send_embed(ctx, "Pong", "The bot is online and responding.", COLOR_SUCCESS)
 
+
+for removed_command in ("coins", "resetcoins", "coinleaderboard", "bethistory"):
+    bot.remove_command(removed_command)
 
 bot.run(TOKEN)
