@@ -2847,7 +2847,11 @@ def website_voice_channels():
             continue
         channels.append({
             "id": str(channel.id), "name": channel.name, "position": channel.position,
-            "members": [member.display_name for member in channel.members if not member.bot]
+            "members": [
+                {"name": member.display_name,
+                 "avatar_url": str(member.display_avatar.with_size(64))}
+                for member in channel.members if not member.bot
+            ]
         })
     return {"channels": channels}
 
