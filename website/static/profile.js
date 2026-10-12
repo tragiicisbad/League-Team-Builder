@@ -1,6 +1,7 @@
 (() => {
   const get = id => document.getElementById(id);
   let account = null;
+  let sessionLoading = null;
   const modButton = document.createElement('button');
   modButton.type = 'button'; modButton.textContent = 'Moderator'; modButton.hidden = true;
   document.getElementById('nav-links').append(modButton);
@@ -347,18 +348,33 @@
     document.querySelectorAll('.role-choice').forEach(button => button.classList.toggle('is-selected', button.dataset.role === saved.primary));
     document.querySelectorAll('.profile-open').forEach(button => {if (button.closest('nav')) button.textContent = signedIn ? 'My profile' : 'Sign in';});
   }
-  async function load() {
+  async function loadSession() {
     try {
-      const response = await fetch('/api/profile', {cache:'no-store'});
+      const response = await fetch('/api/profile', {cache:'no-store', credentials:'same-origin', signal:AbortSignal.timeout(10000)});
       if (!response.ok) throw Error();
       account = await response.json();
-    } catch {account = null;}
+    } catch {
+      // A temporary connection failure should not erase a known session.
+      return;
+    }
     display();
     await refreshStatus();
     if (account?.authenticated && !modData) await modRequest();
     if (!account?.authenticated) {modData = null; modButton.hidden = true; modLayout.hidden = true;}
     routeModerator();
   }
+  function load() {
+    if (!sessionLoading) sessionLoading = loadSession().finally(()=>{sessionLoading = null;});
+    return sessionLoading;
+  }
+  setInterval(()=>{
+    if (!document.hidden && !get('profile-dialog').open) load();
+  },15000);
+  window.addEventListener('focus',()=>{if (!get('profile-dialog').open) load();});
+  window.addEventListener('online',()=>{if (!get('profile-dialog').open) load();});
+  document.addEventListener('visibilitychange',()=>{
+    if (!document.hidden && !get('profile-dialog').open) load();
+  });
   authLink.addEventListener('click', event => {if (!account?.login_available) {event.preventDefault();get('profile-feedback').textContent = 'Discord sign-in needs to be configured on the server.';}});
   async function open(role) {
     await load(); get('profile-feedback').textContent = '';
