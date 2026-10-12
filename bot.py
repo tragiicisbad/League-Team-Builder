@@ -50,6 +50,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.reactions = True
 intents.members = True
+intents.voice_states = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 result_lock = asyncio.Lock()
@@ -2826,12 +2827,29 @@ async def start_tournament_service():
         last_match_history_channel_id = state.get("history_channel_id")
         last_teams_embed_description = f"Tournament lobby code: `{game['code']}`"
         active_betting_id = state.get("betting_id")
-    tournament_service = riot.TournamentService(resolve_tournament_result, activity=lambda: {
+    tournament_service = riot.TournamentService(resolve_tournament_result, voice=website_voice_channels, activity=lambda: {
         "queued": len(player_queue), "capacity": MAX_QUEUE_SIZE,
         "waitlist": len(waitlist_queue),
         "state": "In game" if queue_locked else "Ready check" if ready_check else "Queue open" if queue_message_id else "No active queue"
     })
     await tournament_service.start()
+
+
+def website_voice_channels():
+    guild = bot.get_guild(1515283503657259108)
+    if guild is None or not bot.is_ready():
+        return None
+    verified = discord.utils.get(guild.roles, name="Verified")
+    channels = []
+    for channel in guild.voice_channels:
+        permissions = channel.permissions_for(verified or guild.default_role)
+        if not permissions.view_channel:
+            continue
+        channels.append({
+            "id": str(channel.id), "name": channel.name, "position": channel.position,
+            "members": [member.display_name for member in channel.members if not member.bot]
+        })
+    return {"channels": channels}
 
 
 async def resolve_tournament_result(game, winner, match_id):

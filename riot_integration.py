@@ -209,9 +209,10 @@ def verified_winner(match, snapshot):
 
 
 class TournamentService:
-    def __init__(self, resolve, activity=None):
+    def __init__(self, resolve, activity=None, voice=None):
         self.resolve = resolve
         self.activity = activity
+        self.voice = voice
         self.runner = None
         self.task = None
         self.lock = asyncio.Lock()
@@ -279,6 +280,7 @@ class TournamentService:
         app.router.add_get("/riot.txt", self.verification)
         app.router.add_get("//riot.txt", self.verification)
         app.router.add_get("/api/standings", self.standings)
+        app.router.add_get("/api/voice", self.voice_channels)
         self.runner = web.AppRunner(app)
         await self.runner.setup()
         await web.TCPSite(self.runner, "0.0.0.0", int(os.getenv("PORT", "8080"))).start()
@@ -293,6 +295,14 @@ class TournamentService:
 
     async def health(self, req):
         return web.json_response({"status": "ok"})
+
+    async def voice_channels(self, req):
+        if self.voice is None:
+            raise web.HTTPServiceUnavailable()
+        payload = self.voice()
+        if payload is None:
+            raise web.HTTPServiceUnavailable()
+        return web.json_response(payload, headers={"Cache-Control": "no-store"})
 
     async def verification(self, req):
         path = Path(__file__).with_name("website") / "riot.txt"
