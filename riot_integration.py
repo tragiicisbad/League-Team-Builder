@@ -11,6 +11,7 @@ import aiohttp
 from aiohttp import web
 
 from database import connect
+from website_auth import WebsiteAuth
 
 
 class RiotError(Exception):
@@ -273,6 +274,10 @@ class TournamentService:
         if self.runner is not None:
             return
         app = web.Application(client_max_size=16384)
+        auth = WebsiteAuth()
+        if auth.configured:
+            auth.setup()
+        auth.routes(app)
         app.router.add_post("/riot/callback", self.callback)
         app.router.add_get("/health", self.health)
         app.router.add_get("/", self.home)
