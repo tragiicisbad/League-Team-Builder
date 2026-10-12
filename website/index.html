@@ -133,6 +133,7 @@
     header{min-height:88px;padding:16px max(24px,calc((100% - 1200px)/2));gap:16px;background:#17191c;border-bottom:1px solid #424b53}header>img{width:54px;height:54px;object-fit:contain;border-radius:0}.brand-name{font:700 25px/1.1 Inter,system-ui,sans-serif;color:#edf2f5}.brand-subtitle{display:block;font-size:12px;margin-top:6px;color:#aebbc5}.site-links{margin-left:auto;gap:28px;align-items:center}.site-links a{font-size:14px;min-height:42px;display:inline-flex;align-items:center;text-decoration:none;transition:color .2s}.site-links a[aria-current="page"]{color:#b0eaf3;border-bottom:2px solid #9adfed}.site-links a:last-child{background:#a3e2ed;color:#172126;border:1px solid #a3e2ed;border-radius:6px;padding:0 18px;font-weight:600}.site-links a:last-child:hover{background:#caf0f6}header .region{display:none}.site-links a:focus-visible{outline:2px solid #c2eff7;outline-offset:4px}@media(max-width:700px){header{padding:12px 20px;min-height:76px;gap:10px;flex-wrap:wrap}header>img{width:42px;height:42px}.brand-name{font-size:22px}.brand-subtitle{font-size:10px}.site-links{width:100%;margin:6px 0 0;padding:10px 0 0;border-top:1px solid #343c43;justify-content:space-between;gap:12px;order:3}.site-links a{font-size:13px;min-height:38px}.site-links a:last-child{padding:0 14px}}
     .discord-copy .discord-label{margin-left:12px}.discord-copy h2{margin-left:0}.discord-copy>p:not(.discord-note){margin-left:22px;max-width:calc(100% - 22px)}.discord-copy>p:nth-of-type(2){margin-left:42px;max-width:calc(100% - 42px)}.discord-copy>.action{margin-left:22px}.discord-copy>.discord-note{margin-left:8px;max-width:calc(100% - 8px)}.hero-content>.hero-meta{margin-left:12px}.hero-content>p{margin-left:24px;max-width:calc(100% - 24px)}.hero-content>.hero-actions{margin-left:12px}.home-details article:nth-child(2){margin-left:24px}.home-details article:nth-child(3){margin-left:48px}.getting-started details:nth-of-type(even){margin-left:20px}.home-end>.action{margin-left:16px}@media(max-width:700px){.discord-copy>p:not(.discord-note){margin-left:12px;max-width:calc(100% - 12px)}.discord-copy>p:nth-of-type(2){margin-left:24px;max-width:calc(100% - 24px)}.discord-copy>.action{margin-left:12px}.hero-content>p{margin-left:12px;max-width:calc(100% - 12px)}.home-details article:nth-child(2){margin-left:12px}.home-details article:nth-child(3){margin-left:24px}.getting-started details:nth-of-type(even){margin-left:10px}}
     .discord-hub>.voice-panel{height:420px;max-height:none;display:flex;flex-direction:column}.voice-panel>#voice-channels,.voice-panel>#queue-display{overflow:auto;flex:1;min-height:0}.discord-hub>.voice-panel>a{margin-top:16px;flex-shrink:0}.queue-panel p{font-size:13px;color:#aebbc5;line-height:1.7}.queue-panel .queue-status{color:#a3e2ed}.queue-panel h4{font-size:13px;color:#b5bac1;margin:16px 0 8px}.queue-members{list-style:none;padding:0;margin:0}@media(min-width:1100px){.discord-hub{grid-template-columns:minmax(280px,1fr) minmax(0,300px) minmax(0,300px);gap:24px}}@media(min-width:701px) and (max-width:1099px){.discord-hub{grid-template-columns:repeat(2,minmax(0,1fr));gap:24px}.discord-copy{grid-column:1/-1;max-width:640px}}@media(max-width:700px){.discord-hub{grid-template-columns:minmax(0,1fr)}.discord-hub>.voice-panel{height:360px}}
+    .queue-rank{margin-left:auto;color:#a3e2ed;font-size:11px;flex-shrink:0}.queue-members .voice-member{flex-wrap:wrap;column-gap:8px}
   </style>
 </head>
 <body>
@@ -232,7 +233,9 @@
           const item=element('li',null,'voice-member');
           const avatar=element('span',member.name.slice(0,2).toUpperCase(),'voice-avatar');
           if(member.avatar_url){const img=document.createElement('img');img.src=member.avatar_url;img.alt='';img.width=24;img.height=24;img.style.cssText='border-radius:50%;object-fit:cover';img.onerror=()=>{avatar.textContent=member.name.slice(0,2).toUpperCase()};avatar.replaceChildren(img)}
-          item.append(avatar,element('span',member.name,'voice-member-name'));list.append(item);
+          item.append(avatar,element('span',member.name,'voice-member-name'));
+          if(member.rank)item.append(element('span',member.rank,'queue-rank'));
+          list.append(item);
         });container.append(list);
       }
       members('Players',players);
@@ -244,12 +247,12 @@
       if(document.hidden || $('homepage').hidden)return;
       const container=$('voice-channels');
       try{
-        const localPreview=['127.0.0.1','localhost','[::1]'].includes(location.hostname) && location.port==='8091';
+        const localPreview=['127.0.0.1','localhost','[::1]'].includes(location.hostname) && new URLSearchParams(location.search).get('demo')==='1';
         let widget;
         if(localPreview){
           widget={channels:[{name:'PCL Lobby',position:0,members:[{name:'Test Member',avatar_url:'/pcl-logo.png'}]},{name:'Blue Team',position:1,members:[]},{name:'Red Team',position:2,members:[]}]};
         }else{
-          const response=await fetch('/api/voice',{signal:AbortSignal.timeout(10000)});
+          const response=await fetch('/api/voice',{cache:'no-store',signal:AbortSignal.timeout(10000)});
           if(!response.ok)throw Error();
           widget=await response.json();
         }
@@ -292,7 +295,7 @@
     }
     window.addEventListener('hashchange',refreshVoice);
     document.addEventListener('visibilitychange',refreshVoice);
-    refreshVoice();setInterval(refreshVoice,60000);
+    refreshVoice();setInterval(refreshVoice,15000);
     refresh();setInterval(refresh,30000);
   </script>
 </body>

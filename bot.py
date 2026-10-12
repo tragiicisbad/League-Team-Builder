@@ -2858,6 +2858,7 @@ def website_voice_channels():
         for uid, player in players.items():
             member = guild.get_member(int(uid))
             result.append({"name": member.display_name if member else player.get("name", "Player"),
+                           "rank": rank_for_rating(player.get("rating", 0)),
                            "avatar_url": str(member.display_avatar.with_size(64)) if member else None})
         return result
     return {"channels": channels, "queue": {
