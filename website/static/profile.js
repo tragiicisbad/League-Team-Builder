@@ -345,7 +345,14 @@
     get('saved-role-summary').textContent = signedIn
       ? (saved.primary ? 'Primary: ' + saved.primary + ' / Secondary: ' + saved.secondary + (account.player ? ' / ' + account.player.rank + ' / ' + account.player.rating + ' MMR' : '') : 'Choose your roles in My profile.')
       : 'Sign in with Discord to save your role preferences.';
-    document.querySelectorAll('.role-choice').forEach(button => button.classList.toggle('is-selected', button.dataset.role === saved.primary));
+    document.querySelectorAll('.role-choice').forEach(button => {
+      const role = button.dataset.role;
+      button.classList.toggle('is-selected', role === saved.primary);
+      button.classList.toggle('is-secondary', role === saved.secondary);
+      button.classList.toggle('is-avoided', role === saved.avoided);
+      const preference = role === saved.primary ? 'Primary' : role === saved.secondary ? 'Secondary' : role === saved.avoided ? 'Avoided' : '';
+      button.setAttribute('aria-label', role + (preference ? ': ' + preference + ' role' : ': Choose as primary role'));
+    });
     document.querySelectorAll('.profile-open').forEach(button => {if (button.closest('nav')) button.textContent = signedIn ? 'My profile' : 'Sign in';});
   }
   async function loadSession() {

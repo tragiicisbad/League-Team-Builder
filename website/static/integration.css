@@ -75,3 +75,8 @@ button:disabled,input:disabled,select:disabled{opacity:.55;cursor:not-allowed}
 @media(max-width:850px){.mod-layout{grid-template-columns:minmax(0,1fr);gap:32px}.mod-dashboard.mod-page{margin-top:100px}}
 .mod-accounts{grid-column:1/-1}.mod-account-row{display:flex;justify-content:space-between;gap:20px;padding:14px 0;border-bottom:1px solid var(--line);overflow-wrap:anywhere}.mod-account-row small{display:block;color:var(--muted);margin-top:6px}.mod-account-row>span{color:var(--muted);font-size:14px}
 @media(max-width:700px){.mod-account-row{flex-direction:column;gap:8px}}
+.role-choice.is-secondary,.role-choice.is-secondary:hover{background:#42636b;border-color:#a4dce5;color:#f5fcfd}
+.role-choice.is-secondary span{color:#d0edf2}
+.role-choice.is-avoided,.role-choice.is-avoided:hover{background:#49262d;border-color:#ee7283;color:#ffe9ed}
+.role-choice.is-avoided span{color:#ffb6c1}
+.role-choice.is-selected,.role-choice.is-selected:hover{background:#182e36;border-color:var(--cyan);color:var(--silver)}
