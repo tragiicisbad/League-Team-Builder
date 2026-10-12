@@ -296,7 +296,8 @@ class TournamentService:
             self.task = asyncio.create_task(self.poll())
 
     async def home(self, req):
-        return web.FileResponse(Path(__file__).with_name("website") / "index.html")
+        return web.FileResponse(Path(__file__).with_name("website") / "index.html",
+                                headers={"Cache-Control": "no-cache"})
 
     async def logo(self, req):
         return web.FileResponse(Path(__file__).with_name("website") / "pcl-logo.png")
